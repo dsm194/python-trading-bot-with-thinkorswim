@@ -2,7 +2,7 @@ from assets.helper_functions import getDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
 from threading import Thread
 from assets.exception_handler import exception_handler
-from api_trader.order_builder import OrderBuilder
+from api_trader.order_builder import OrderBuilderWrapper
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -21,7 +21,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 RUN_TASKS = True if os.getenv('RUN_TASKS') == "True" else False
 
 
-class ApiTrader(Tasks, OrderBuilder):
+class ApiTrader(Tasks, OrderBuilderWrapper):
 
     def __init__(self, user, mongo, push, logger, account_id, tdameritrade):
         """
@@ -33,54 +33,63 @@ class ApiTrader(Tasks, OrderBuilder):
             account_id ([str]): [USER ACCOUNT ID FOR TDAMERITRADE]
             asset_type ([str]): [ACCOUNT ASSET TYPE (EQUITY, OPTIONS)]
         """
+        
+        try:
+            self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
 
-        self.RUN_LIVE_TRADER = True if user["Accounts"][str(
-            account_id)]["Account_Position"] == "Live" else False
+            # Instance variables
+            self.user = user
+            self.mongo = mongo
+            self.push = push
+            self.logger = logger
+            self.account_id = account_id
+            self.tdameritrade = tdameritrade
 
-        self.tdameritrade = tdameritrade
+            # MongoDB collections
+            self.users = mongo.users
+            self.open_positions = mongo.open_positions
+            self.closed_positions = mongo.closed_positions
+            self.strategies = mongo.strategies
+            self.rejected = mongo.rejected
+            self.canceled = mongo.canceled
+            self.queue = mongo.queue
 
-        self.mongo = mongo
+            self.no_ids_list = []
 
-        self.account_id = account_id
+            # Initialize parent classes
+            OrderBuilderWrapper.__init__(self)
+            Tasks.__init__(self)
 
-        self.user = user
+            # Path to the stop signal file
+            self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
 
-        self.users = mongo.users
-
-        self.push = push
-
-        self.open_positions = mongo.open_positions
-
-        self.closed_positions = mongo.closed_positions
-
-        self.strategies = mongo.strategies
-
-        self.rejected = mongo.rejected
-
-        self.canceled = mongo.canceled
-
-        self.queue = mongo.queue
-
-        self.logger = logger
-
-        self.no_ids_list = []
-
-        OrderBuilder.__init__(self)
-
-        Tasks.__init__(self)
-
-        # If user wants to run tasks
-        if RUN_TASKS:
-
-            Thread(target=self.runTasks, daemon=True).start()
-
-        else:
+            if RUN_TASKS:
+                self.task_thread = Thread(target=self.run_tasks_with_exit_check, daemon=True)
+                self.task_thread.start()
+            else:
+                self.logger.info(
+                    f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n",
+                    extra={'log': False}
+                )
 
             self.logger.info(
-                f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n", extra={'log': False})
+                f"RUNNING {self.user['Accounts'][str(self.account_id)]['Account_Position'].upper()} TRADER ({modifiedAccountID(self.account_id)})\n"
+            )
+        
+        except Exception as e:
+            self.logger.error(f"Error initializing ApiTrader: {str(e)}")
 
-        self.logger.info(
-            f"RUNNING {user['Accounts'][str(account_id)]['Account_Position'].upper()} TRADER ({modifiedAccountID(self.account_id)})\n")
+    def run_tasks_with_exit_check(self):
+        """Run tasks and exit if stop_signal.txt is detected."""
+        while not self.check_stop_signal():
+            self.runTasks()
+            time.sleep(1)  # Sleep to avoid tight loop
+
+        self.logger.info(f"STOP SIGNAL DETECTED. TERMINATING TASK THREAD FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})")
+
+    def check_stop_signal(self):
+        """Check if the stop_signal.txt file exists."""
+        return os.path.isfile(self.stop_signal_file)
 
     # STEP ONE
     @exception_handler
@@ -188,7 +197,7 @@ class ApiTrader(Tasks, OrderBuilder):
                 queue_order["Order_ID"])
 
             # ORDER ID NOT FOUND. ASSUME REMOVED OR PAPER TRADING
-            if "error" in spec_order:
+            if "error" in spec_order['message'] or "Order not found" in spec_order['message']:
 
                 custom = {
                     "price": queue_order["Entry_Price"] if queue_order["Direction"] == "OPEN POSITION" else queue_order["Exit_Price"],
@@ -264,45 +273,27 @@ class ApiTrader(Tasks, OrderBuilder):
         """ METHOD PUSHES ORDER TO EITHER OPEN POSITIONS OR CLOSED POSITIONS COLLECTION IN MONGODB.
             IF BUY ORDER, THEN PUSHES TO OPEN POSITIONS.
             IF SELL ORDER, THEN PUSHES TO CLOSED POSITIONS.
-
-        Args:
-            queue_order ([dict]): [QUEUE ORDER DATA FROM QUEUE]
-            spec_order ([dict(json)]): [ORDER DATA FROM TDAMERITRADE]
         """
 
         symbol = queue_order["Symbol"]
+        strategy = queue_order["Strategy"]
+        direction = queue_order["Direction"]
+        account_id = queue_order["Account_ID"]
+        asset_type = queue_order["Asset_Type"]
+        side = queue_order["Side"]
+        position_type = queue_order["Position_Type"]
+        position_size = queue_order["Position_Size"]
+        account_position = queue_order["Account_Position"]
+        order_type = queue_order["Order_Type"]
 
         if "orderActivityCollection" in spec_order:
-
             price = spec_order["orderActivityCollection"][0]["executionLegs"][0]["price"]
-
             shares = int(spec_order["quantity"])
-
         else:
-
-            price = spec_order["price"]
-
-            shares = int(queue_order["Qty"])
+            price = spec_order.get("price")
+            shares = int(queue_order.get("Qty"))
 
         price = round(price, 2) if price >= 1 else round(price, 4)
-
-        strategy = queue_order["Strategy"]
-
-        side = queue_order["Side"]
-
-        account_id = queue_order["Account_ID"]
-
-        position_size = queue_order["Position_Size"]
-
-        asset_type = queue_order["Asset_Type"]
-
-        position_type = queue_order["Position_Type"]
-
-        direction = queue_order["Direction"]
-
-        account_position = queue_order["Account_Position"]
-
-        order_type = queue_order["Order_Type"]
 
         obj = {
             "Symbol": symbol,
@@ -317,107 +308,78 @@ class ApiTrader(Tasks, OrderBuilder):
             "Order_Type": order_type
         }
 
+        if order_type == "OCO":
+            obj["childOrderStrategies"] = queue_order.get("childOrderStrategies")
+
         if asset_type == "OPTION":
-
-            obj["Pre_Symbol"] = queue_order["Pre_Symbol"]
-
-            obj["Exp_Date"] = queue_order["Exp_Date"]
-
-            obj["Option_Type"] = queue_order["Option_Type"]
+            obj.update({
+                "Pre_Symbol": queue_order["Pre_Symbol"],
+                "Exp_Date": queue_order["Exp_Date"],
+                "Option_Type": queue_order["Option_Type"]
+            })
 
         collection_insert = None
-
         message_to_push = None
 
         if direction == "OPEN POSITION":
-
-            obj["Qty"] = shares
-
-            obj["Entry_Price"] = price
-
-            obj["Entry_Date"] = getDatetime()
-
+            obj.update({
+                "Qty": shares,
+                "Entry_Price": price,
+                "Entry_Date": getDatetime()
+            })
             collection_insert = self.open_positions.insert_one
-
-            message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Asset Type: {asset_type} \n Date: {getDatetime()} \n Trader: {self.user['Name']} \n Account Position: {'Live Trade' if self.RUN_LIVE_TRADER else 'Paper Trade'}"
+            message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Trader: {self.user['Name']}"
 
         elif direction == "CLOSE POSITION":
-
             position = self.open_positions.find_one(
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
 
-            obj["Qty"] = position["Qty"]
+            if position is None:
+                position = queue_order
 
-            obj["Entry_Price"] = position["Entry_Price"]
+            obj.update({
+                "Qty": position["Qty"],
+                "Entry_Price": position["Entry_Price"],
+                "Entry_Date": position["Entry_Date"],
+                "Exit_Price": price,
+                "Exit_Date": getDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
+            })
 
-            obj["Entry_Date"] = position["Entry_Date"]
+            # Check if the position is already in closed_positions
+            already_closed = self.closed_positions.count_documents(
+                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, 
+                 "Entry_Date": position["Entry_Date"], "Entry_Price": position["Entry_Price"],
+                 "Exit_Price": price, "Qty": position["Qty"],})
 
-            obj["Exit_Price"] = price
+            if already_closed == 0:
+                collection_insert = self.closed_positions.insert_one
+                message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
 
-            obj["Exit_Date"] = getDatetime()
-
-            exit_price = round(price * position["Qty"], 2)
-
-            entry_price = round(
-                position["Entry_Price"] * position["Qty"], 2)
-
-            collection_insert = self.closed_positions.insert_one
-
-            message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Entry Date: {position['Entry_Date']} \n Exit Price: ${price} \n Exit Date: {getDatetime()} \n Strategy: {strategy} \n Asset Type: {asset_type} \n Trader: {self.user['Name']} \n Account Position: {'Live Trade' if self.RUN_LIVE_TRADER else 'Paper Trade'}"
-
-            # REMOVE FROM OPEN POSITIONS
             is_removed = self.open_positions.delete_one(
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
 
+            if is_removed.deleted_count == 0:
+                self.logger.error(f"Failed to delete open position for {symbol}")
+
+        # Push to MongoDB with retry logic
+        if collection_insert:
             try:
+                collection_insert(obj)
+            except (WriteConcernError, WriteError) as e:
+                self.logger.error(f"Failed to insert {symbol} into MongoDB. Retrying... - {e}")
+                try:
+                    collection_insert(obj)
+                except Exception as e:
+                    self.logger.error(f"Retry failed for {symbol}. Error: {e}")
+            except Exception as e:
+                self.logger.error(f"Unexpected error inserting {symbol}: {e}")
 
-                if int(is_removed.deleted_count) == 0:
-
-                    self.logger.error(
-                        f"INITIAL FAIL OF DELETING OPEN POSITION FOR SYMBOL {symbol} - {self.user['Name']} ({modifiedAccountID(self.account_id)})")
-
-                    self.open_positions.delete_one(
-                        {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
-
-            except Exception:
-
-                msg = f"{self.user['Name']} - {modifiedAccountID(self.account_id)} - {traceback.format_exc()}"
-
-                self.logger.error(msg)
-
-        # PUSH OBJECT TO MONGO. IF WRITE ERROR THEN ONE RETRY WILL OCCUR. IF YOU SEE THIS ERROR, THEN YOU MUST CONFIRM THE PUSH OCCURED.
-        try:
-
-            collection_insert(obj)
-
-        except WriteConcernError as e:
-
-            self.logger.error(
-                f"INITIAL FAIL OF INSERTING OPEN POSITION FOR SYMBOL {symbol} - DATE/TIME: {getDatetime()} - DATA: {obj} - {e}")
-
-            collection_insert(obj)
-
-        except WriteError as e:
-
-            self.logger.error(
-                f"INITIAL FAIL OF INSERTING OPEN POSITION FOR SYMBOL {symbol} - DATE/TIME: {getDatetime()} - DATA: {obj} - {e}")
-
-            collection_insert(obj)
-
-        except Exception:
-
-            msg = f"{self.user['Name']} - {modifiedAccountID(self.account_id)} - {traceback.format_exc()}"
-
-            self.logger.error(msg)
-
-        self.logger.info(
-            f"Pushing {side} Order For {symbol} To {'Open Positions' if direction == 'OPEN POSITION' else 'Closed Positions'} ({modifiedAccountID(self.account_id)})")
-
-        # REMOVE FROM QUEUE
-        self.queue.delete_one({"Trader": self.user["Name"], "Symbol": symbol,
-                               "Strategy": strategy, "Account_ID": self.account_id})
+        # Remove from Queue
+        self.queue.delete_one(
+            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": self.account_id})
 
         self.push.send(message_to_push)
+
 
     # RUN TRADER
     @exception_handler

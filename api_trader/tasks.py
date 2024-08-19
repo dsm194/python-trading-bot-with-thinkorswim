@@ -4,9 +4,9 @@ import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
-
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getDatetime, selectSleep, modifiedAccountID
+from pymongo import UpdateOne
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -16,7 +16,6 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_PERCENTAGE'))
 STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENTAGE'))
-
 
 class Tasks:
 
@@ -29,49 +28,105 @@ class Tasks:
 
         self.isAlive = True
 
+
     @exception_handler
     def checkOCOpapertriggers(self):
 
-        for position in self.mongo.open_positions.find({"Trader": self.user["Name"]}):
+        # Are we during market hours?
+        dtNow = getDatetime()
+        marketHours = self.tdameritrade.getMarketHours(date=dtNow)
 
-            symbol = position["Symbol"]
+        # Fetch all open positions for the trader and the paper account in one query
+        open_positions = list(self.mongo.open_positions.find(
+            {"Trader": self.user["Name"], "Account_Position": "Paper"}))
 
-            asset_type = position["Asset_Type"]
+        # Fetch all relevant strategies for the account in one query and store them in a dictionary
+        strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
+        strategy_dict = {strategy["Strategy"]: strategy for strategy in strategies}
 
-            resp = self.tdameritrade.getQuote(
-                symbol if asset_type == "EQUITY" else position["Pre_Symbol"])
+        positions_by_symbol = {}
+        for position in open_positions:
+            symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
+            if symbol not in positions_by_symbol:
+                positions_by_symbol[symbol] = []
+            positions_by_symbol[symbol].append(position)
 
-            price = float(resp[symbol  if asset_type == "EQUITY" else position["Pre_Symbol"]]["askPrice"])
+        # Process symbols in chunks of 500
+        symbols = list(positions_by_symbol.keys())
+        batch_size = 500
+        for i in range(0, len(symbols), batch_size):
+            # Batch the symbols for API call
+            batch_symbols = symbols[i:i + batch_size]
+            quotes = self.tdameritrade.getQuotes(batch_symbols)
 
-            if price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
-                # CLOSE POSITION
-                pass
+            for symbol in batch_symbols:
+                
+                for position in positions_by_symbol[symbol]:
+                    strategy_object = strategy_dict.get(position["Strategy"])
+
+                    if not strategy_object:
+                        self.logger.warning(f"Strategy not found for position: {position['_id']}")
+                        continue
+
+                    quote = quotes.get(symbol)
+
+                    if not quote or "askPrice" not in quote["quote"]:
+                        self.logger.error(f"Quote not found or invalid for symbol: {symbol}")
+                        continue
+
+                    isMarketOpen = marketHours[position["Asset_Type"].lower()][position["Asset_Type"].lower()]['isOpen']
+
+                    # market_status = normalized_market_hours.get(position["Asset_Type"].lower(), None)                    
+                    # if market_status:
+                    #     isMarketOpen = market_status.get('isOpen', None)
+                    # else:
+                    #     isMarketOpen = None
+
+                    price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"] )
+                    
+                    # Check for stop-loss or take-profit conditions
+                    if price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
+                        # Determine side of the order to close the position
+                        position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
+                        self.sendOrder(position, strategy_object, "CLOSE POSITION")
+
+                    # Check for stop_signal.txt in each iteration
+                    if os.path.isfile(self.stop_signal_file):
+                        self.logger.info("Stop signal detected. Exiting checkOCOpapertriggers.")
+                        return
+
 
     @exception_handler
     def checkOCOtriggers(self):
-        """ Checks OCO triggers (stop loss/ take profit) to see if either one has filled. If so, then close position in mongo like normal.
-
+        """Checks OCO triggers (stop loss/ take profit) to see if either one has filled. 
+        If so, closes the position in MongoDB accordingly.
         """
 
+        # Fetch open OCO positions
         open_positions = self.open_positions.find(
-            {"Trader": self.user["Name"], "Order_Type": "OCO"})
+            {"Trader": self.user["Name"], "Order_Type": "OCO", "Account_Position": "Live"}
+        )
+
+        bulk_updates = []
+        rejected_inserts = []
+        canceled_inserts = []
 
         for position in open_positions:
-
             childOrderStrategies = position["childOrderStrategies"]
+            updates = {}
 
-            for order_id in childOrderStrategies.keys():
-
+            for order_id, order_data in childOrderStrategies.items():
+                # Query the order status only once per order_id
                 spec_order = self.tdameritrade.getSpecificOrder(order_id)
-
                 new_status = spec_order["status"]
 
+                # If order is filled, push the order and skip updating the position
                 if new_status == "FILLED":
-
                     self.pushOrder(position, spec_order)
+                    break  # No need to check other orders in the same OCO group
 
-                elif new_status == "CANCELED" or new_status == "REJECTED":
-
+                # Handle rejected/canceled orders
+                elif new_status in ["CANCELED", "REJECTED"]:
                     other = {
                         "Symbol": position["Symbol"],
                         "Order_Type": position["Order_Type"],
@@ -81,17 +136,42 @@ class Tasks:
                         "Date": getDatetime(),
                         "Account_ID": self.account_id
                     }
+                    
+                    # Append the inserts to the respective lists
+                    if new_status == "REJECTED":
+                        rejected_inserts.append(other)
+                    else:
+                        canceled_inserts.append(other)
 
-                    self.rejected.insert_one(
-                        other) if new_status == "REJECTED" else self.canceled.insert_one(other)
-
+                    # Log the status
                     self.logger.info(
-                        f"{new_status.upper()} ORDER For {position['Symbol']} - TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}")
-
+                        f"{new_status.upper()} ORDER For {position['Symbol']} - "
+                        f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
+                    )
                 else:
+                    # If status is not terminal, queue for bulk updates
+                    updates[f"childOrderStrategies.{order_id}.Order_Status"] = new_status
 
-                    self.open_positions.update_one({"Trader": self.user["Name"], "Symbol": position["Symbol"], "Strategy": position["Strategy"]}, {
-                        "$set": {f"childOrderStrategies.{order_id}.Order_Status": new_status}})
+            # If there are updates, queue them for the bulk update
+            if updates:
+                bulk_updates.append(
+                    UpdateOne(
+                        {"Trader": self.user["Name"], "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
+                        {"$set": updates}
+                    )
+                )
+
+        # Perform bulk updates in MongoDB
+        if bulk_updates:
+            self.open_positions.bulk_write(bulk_updates)
+
+        # Perform bulk inserts for rejected/canceled orders
+        if rejected_inserts:
+            self.rejected.insert_many(rejected_inserts)
+
+        if canceled_inserts:
+            self.canceled.insert_many(canceled_inserts)
+
 
     @exception_handler
     def extractOCOchildren(self, spec_order):
@@ -136,7 +216,7 @@ class Tasks:
 
         # IF STRATEGY NOT IN STRATEGIES COLLECTION IN MONGO, THEN ADD IT
 
-        self.strategies.update(
+        self.strategies.update_one(
             {"Strategy": strategy},
             {"$setOnInsert": obj},
             upsert=True
@@ -154,7 +234,10 @@ class Tasks:
             try:
 
                 # RUN TASKS ####################################################
+                
                 self.checkOCOtriggers()
+
+                self.checkOCOpapertriggers()
 
                 ##############################################################
 

@@ -18,6 +18,7 @@ requests = "*"
 pytz = "*"
 psutil = "*"
 certifi = "*"
+pypi = "*"
 
 [requires]
 python_version = "3.8"

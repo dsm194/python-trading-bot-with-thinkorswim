@@ -2,10 +2,23 @@
 from datetime import datetime, timedelta
 import urllib.parse as up
 import time
+import httpx
 import requests
 from assets.helper_functions import modifiedAccountID
 from assets.exception_handler import exception_handler
+from schwab.auth import easy_client
+from schwab.auth import client_from_manual_flow
+from schwab.auth import client_from_login_flow
+from schwab.auth import client_from_token_file
+from schwab.client.base import BaseClient as schwabBaseClient
+import os
+from dotenv import load_dotenv
 
+load_dotenv(dotenv_path="config.env")
+
+API_KEY = os.getenv("API_KEY")
+APP_SECRET = os.getenv("APP_SECRET")
+CALLBACK_URL = os.getenv("CALLBACK_URL")
 
 class TDAmeritrade:
 
@@ -30,6 +43,8 @@ class TDAmeritrade:
         self.terminate = False
 
         self.invalid_count = 0
+
+        self.client = {}
 
     @exception_handler
     def initialConnect(self):
@@ -63,125 +78,29 @@ class TDAmeritrade:
 
         # GET USER DATA
         user = self.users.find_one({"Name": self.user["Name"]})
+        token_path = user["Accounts"][self.account_id]['token_path']
+        if os.path.isfile(token_path):
+            c = client_from_token_file(token_path, API_KEY, APP_SECRET)
+        else:
+            self.logger.warning('Failed to find token file \'%s\'', token_path)
+            c = client_from_manual_flow(API_KEY, APP_SECRET, CALLBACK_URL, token_path)
 
-        # ADD EXISTING TOKEN TO HEADER
-        self.header.update({
-            "Authorization": f"Bearer {user['Accounts'][self.account_id]['access_token']}"})
+        if c:
+            self.client = c
 
-        # CHECK IF ACCESS TOKEN NEEDS UPDATED
-        age_sec = round(
-            time.time() - user["Accounts"][self.account_id]["created_at"])
+            # ADD NEW TOKEN DATA TO USER DATA IN DB
+            self.users.update_one({"Name": self.user["Name"]}, {
+                "$set": {f"{self.account_id}.refresh_exp_date": (datetime.now().replace(
+                    microsecond=0) + timedelta(days=90)).strftime("%Y-%m-%d")}})
 
-        if age_sec >= user["Accounts"][self.account_id]['expires_in'] - 60:
+        #         self.header.update({
+        #             "Authorization": f"Bearer {token['access_token']}"})
 
-            token = self.getNewTokens(user["Accounts"][self.account_id])
+        else:
 
-            if token:
-
-                # ADD NEW TOKEN DATA TO USER DATA IN DB
-                self.users.update_one({"Name": self.user["Name"]}, {
-                    "$set": {f"Accounts.{self.account_id}.expires_in": token['expires_in'], f"Accounts.{self.account_id}.access_token": token["access_token"], f"Accounts.{self.account_id}.created_at": time.time()}})
-
-                self.header.update({
-                    "Authorization": f"Bearer {token['access_token']}"})
-
-            else:
-
-                return False
-
-        # CHECK IF REFRESH TOKEN NEEDS UPDATED
-        now = datetime.strptime(datetime.strftime(
-            datetime.now().replace(microsecond=0), "%Y-%m-%d"), "%Y-%m-%d")
-
-        refresh_exp = datetime.strptime(
-            user["Accounts"][self.account_id]["refresh_exp_date"], "%Y-%m-%d")
-
-        days_left = (refresh_exp - now).total_seconds() / 60 / 60 / 24
-
-        if days_left <= 5:
-
-            token = self.getNewTokens(
-                user["Accounts"][self.account_id], refresh_type="Refresh Token")
-
-            if token:
-
-                # ADD NEW TOKEN DATA TO USER DATA IN DB
-                self.users.update_one({"Name": self.user["Name"]}, {
-                    "$set": {f"{self.account_id}.refresh_token": token['refresh_token'], f"{self.account_id}.refresh_exp_date": (datetime.now().replace(
-                        microsecond=0) + timedelta(days=90)).strftime("%Y-%m-%d")}})
-
-                self.header.update({
-                    "Authorization": f"Bearer {token['access_token']}"})
-
-            else:
-
-                return False
+            return False
 
         return True
-
-    @exception_handler
-    def getNewTokens(self, token, refresh_type="Access Token"):
-        """ METHOD GETS NEW ACCESS TOKEN, OR NEW REFRESH TOKEN IF NEEDED.
-
-        Args:
-            token ([dict]): TOKEN DATA (ACCESS TOKEN, REFRESH TOKEN, EXP DATES)
-            refresh_type (str, optional): CAN BE EITHER Access Token OR Refresh Token. Defaults to "Access Token".
-
-        Raises:
-            Exception: IF RESPONSE STATUS CODE IS NOT 200
-
-        Returns:
-            [json]: NEW TOKEN DATA
-        """
-
-        data = {'grant_type': 'refresh_token',
-                'refresh_token': token["refresh_token"],
-                'client_id': self.client_id}
-
-        if refresh_type == "Refresh Token":
-
-            data["access_type"] = "offline"
-
-        # print(f"REFRESHING TOKEN: {data} - TRADER: {self.user['Name']} - REFRESH TYPE: {refresh_type} - ACCOUNT ID: {self.account_id}")
-
-        resp = requests.post('https://api.tdameritrade.com/v1/oauth2/token',
-                             headers={
-                                 'Content-Type': 'application/x-www-form-urlencoded'},
-                             data=data)
-
-        if resp.status_code != 200:
-
-            if not self.no_go_token_sent:
-
-                msg = f"ERROR WITH GETTING NEW TOKENS - {resp.json()} - TRADER: {self.user['Name']} - REFRESH TYPE: {refresh_type} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
-
-                self.logger.error(msg)
-
-                self.push_notification.send(msg)
-
-                self.no_go_token_sent = True
-
-            self.invalid_count += 1
-
-            if self.invalid_count == 5:
-
-                self.terminate = True
-
-                msg = f"{__class__.__name__} - {self.user['Name']} - TDAMERITRADE INSTANCE TERMINATED - {resp.json()} - Refresh Type: {refresh_type} {modifiedAccountID(self.account_id)}"
-
-                self.logger.error(msg)
-
-                self.push_notification.send(msg)
-
-            return
-
-        self.no_go_token_sent = False
-
-        self.invalid_count = 0
-
-        self.terminate = False
-
-        return resp.json()
 
     @exception_handler
     def sendRequest(self, url, method="GET", data=None):
@@ -241,11 +160,31 @@ class TDAmeritrade:
             [json]: ACCOUNT DATA
         """
 
-        fields = up.quote("positions,orders")
+        # fields = up.quote("positions,orders")
 
-        url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}?fields={fields}"
+        # url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}?fields={fields}"
 
-        return self.sendRequest(url)
+        # return self.sendRequest(url)
+
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+            resp = self.client.get_account_numbers()
+            if resp.status_code == httpx.codes.OK:
+                # The response has the following structure. If you have multiple linked
+                # accounts, you'll need to inspect this object to find the hash you want:
+                # [
+                #    {
+                #        "accountNumber": "123456789",
+                #        "hashValue":"123ABCXYZ"
+                #    }
+                #]
+                account_hash = resp.json()[0]['hashValue']
+                return self.client.get_account(account_hash).json()
+            else:
+                return
+        else:
+            return
 
     def placeTDAOrder(self, data):
         """ METHOD PLACES ORDER
@@ -259,7 +198,27 @@ class TDAmeritrade:
 
         url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders"
 
-        return self.sendRequest(url, method="POST", data=data)
+        # return self.sendRequest(url, method="POST", data=data)
+
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+            resp = self.client.get_account_numbers()
+            if resp.status_code == httpx.codes.OK:
+                # The response has the following structure. If you have multiple linked
+                # accounts, you'll need to inspect this object to find the hash you want:
+                # [
+                #    {
+                #        "accountNumber": "123456789",
+                #        "hashValue":"123ABCXYZ"
+                #    }
+                #]
+                account_hash = resp.json()[0]['hashValue']
+                return self.client.place_order(account_hash, data)
+            else:
+                return
+        else:
+            return
 
     def getBuyingPower(self):
         """ METHOD GETS BUYING POWER
@@ -284,9 +243,23 @@ class TDAmeritrade:
             [json]: STOCK QUOTE
         """
 
-        url = f"https://api.tdameritrade.com/v1/marketdata/{symbol}/quotes"
+        # url = f"https://api.tdameritrade.com/v1/marketdata/{symbol}/quotes"
 
-        return self.sendRequest(url)
+        # return self.sendRequest(url)
+
+        isValid = self.checkTokenValidity()
+
+        if symbol == None or symbol == '':
+            self.logger.warning('Symbol in getQuote was empty \'%s\'', symbol)
+            isValid = False
+
+        if isValid:
+            if "/" in symbol:
+                return self.client.get_quotes(symbol).json()
+            else:
+                return self.client.get_quote(symbol).json()
+        else:
+            return
 
     def getQuotes(self, symbols):
         """ METHOD GETS STOCK QUOTES FOR MULTIPLE STOCK IN ONE CALL.
@@ -298,13 +271,20 @@ class TDAmeritrade:
             [json]: ALL SYMBOLS STOCK DATA
         """
 
-        join_ = ",".join(symbols)
+        # join_ = ",".join(symbols)
 
-        seperated_values = up.quote(join_)
+        # seperated_values = up.quote(join_)
 
-        url = f"https://api.tdameritrade.com/v1/marketdata/quotes?symbol={seperated_values}"
+        # url = f"https://api.tdameritrade.com/v1/marketdata/quotes?symbol={seperated_values}"
 
-        return self.sendRequest(url)
+        # return self.sendRequest(url)
+
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+            return self.client.get_quotes(symbols).json()
+        else:
+            return
 
     def getSpecificOrder(self, id):
         """ METHOD GETS A SPECIFIC ORDER INFO
@@ -316,9 +296,29 @@ class TDAmeritrade:
             [json]: ORDER DATA
         """
 
-        url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
+        # url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
 
-        return self.sendRequest(url)
+        # return self.sendRequest(url)
+
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+            resp = self.client.get_account_numbers()
+            if resp.status_code == httpx.codes.OK:
+                # The response has the following structure. If you have multiple linked
+                # accounts, you'll need to inspect this object to find the hash you want:
+                # [
+                #    {
+                #        "accountNumber": "123456789",
+                #        "hashValue":"123ABCXYZ"
+                #    }
+                #]
+                account_hash = resp.json()[0]['hashValue']
+                return self.client.get_order(id, account_hash).json()
+            else:
+                return
+        else:
+            return
 
     def cancelOrder(self, id):
         """ METHOD CANCELS ORDER
@@ -327,9 +327,42 @@ class TDAmeritrade:
             id ([int]): ORDER ID FOR ORDER
 
         Returns:
-            [json]: RESPONSE. LOOKING FOR STATUS CODE 200,201   
+            [json]: RESPONSE. LOOKING FOR STATUS CODE 200,201
         """
 
         url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
 
-        return self.sendRequest(url, method="DELETE")
+        # return self.sendRequest(url, method="DELETE")
+
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+            resp = self.client.get_account_numbers()
+            if resp.status_code == httpx.codes.OK:
+                # The response has the following structure. If you have multiple linked
+                # accounts, you'll need to inspect this object to find the hash you want:
+                # [
+                #    {
+                #        "accountNumber": "123456789",
+                #        "hashValue":"123ABCXYZ"
+                #    }
+                #]
+                account_hash = resp.json()[0]['hashValue']
+                return self.client.cancel_order(id, account_hash).json()
+            else:
+                return
+        else:
+            return
+        
+    def getMarketHours(self, markets=None, *, date=None):
+        isValid = self.checkTokenValidity()
+
+        if isValid:
+
+            # If no market is provided, get all the enum values as a list
+            if markets is None:
+                markets = [market for market in schwabBaseClient.MarketHours.Market]
+
+            return self.client.get_market_hours(markets=markets, date=date).json()
+        else:
+            return
