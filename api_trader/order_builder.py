@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-from schwab.orders.common import OrderType, OrderStrategyType, EquityInstruction, Duration, Session, one_cancels_other
+from schwab.orders.common import OrderType, OrderStrategyType, EquityInstruction, Duration, Session, one_cancels_other, first_triggers_second
 from schwab.orders.generic import OrderBuilder
 from schwab.orders.equities import equity_buy_limit, equity_sell_limit
 from schwab.orders.options import option_buy_to_open_limit, option_sell_to_close_limit
@@ -134,40 +134,52 @@ class OrderBuilderWrapper:
         parent_order, obj = self.standardOrder(trade_data, strategy_object, direction, OCOorder=True)
         asset_type = AssetType.OPTION if "Pre_Symbol" in trade_data else AssetType.EQUITY
         side = trade_data["Side"]
+        parentOrderPriceAsFloat = float(parent_order._price)
 
         # GET THE INVERSE OF THE SIDE
         instruction = {
-            "BUY_TO_OPEN": EquityInstruction.SELL_SHORT,
+            "BUY_TO_OPEN": EquityInstruction.SELL,
             "BUY": EquityInstruction.SELL,
             "SELL": EquityInstruction.BUY,
-            "SELL_TO_OPEN": EquityInstruction.BUY_TO_COVER
+            "SELL_TO_OPEN": EquityInstruction.BUY,
+            "BUY_TO_COVER": EquityInstruction.SELL_SHORT,
+            "SELL_SHORT": EquityInstruction.BUY_TO_COVER
         }[side]
 
        # Create take profit order
-        take_profit_order_builder = OrderBuilder()
-        take_profit_order_builder.set_session(Session.NORMAL)
-        take_profit_order_builder.set_duration(Duration.GOOD_TILL_CANCEL)
-        take_profit_order_builder.set_order_type(OrderType.LIMIT)
-        take_profit_order_builder.set_price(round(parent_order.price * TAKE_PROFIT_PERCENTAGE, 2) if parent_order.price * TAKE_PROFIT_PERCENTAGE >= 1 else round(parent_order.price * TAKE_PROFIT_PERCENTAGE, 4))
+        take_profit_order_builder = (OrderBuilder()
+            .set_order_type(OrderType.LIMIT)
+            .set_session(Session.NORMAL)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_order_strategy_type(OrderStrategyType.SINGLE))
+        take_profit_order_builder_price = parentOrderPriceAsFloat * TAKE_PROFIT_PERCENTAGE
+        take_profit_order_builder_price = round(take_profit_order_builder_price, 2) if take_profit_order_builder_price >= 1 else round(take_profit_order_builder_price, 4)
+        take_profit_order_builder.set_price(str(take_profit_order_builder_price))
+        
         if asset_type == AssetType.EQUITY:
             take_profit_order_builder.add_equity_leg(instruction=instruction, symbol=trade_data["Symbol"], quantity=obj["Qty"])
         else:
             take_profit_order_builder.add_option_leg(instruction=instruction, symbol=trade_data["Pre_Symbol"], quantity=obj["Qty"])
 
         # Create stop loss order
-        stop_loss_order_builder = OrderBuilder()
-        stop_loss_order_builder.set_session(Session.NORMAL)
-        stop_loss_order_builder.set_duration(Duration.GOOD_TILL_CANCEL)
-        stop_loss_order_builder.set_order_type(OrderType.STOP)
-        stop_loss_order_builder.set_stop_price(round(parent_order.price * STOP_LOSS_PERCENTAGE, 2) if parent_order.price * STOP_LOSS_PERCENTAGE >= 1 else round(parent_order.price * STOP_LOSS_PERCENTAGE, 4))
+        stop_loss_order_builder = (OrderBuilder()
+            .set_order_type(OrderType.STOP)
+            .set_session(Session.NORMAL)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_order_strategy_type(OrderStrategyType.SINGLE))
+        stop_loss_order_builder_price = parentOrderPriceAsFloat * STOP_LOSS_PERCENTAGE
+        stop_loss_order_builder_price = round(stop_loss_order_builder_price, 2) if stop_loss_order_builder_price >= 1 else round(stop_loss_order_builder_price, 4)
+        stop_loss_order_builder.set_stop_price(str(stop_loss_order_builder_price))
+
         if asset_type == AssetType.EQUITY:
             stop_loss_order_builder.add_equity_leg(instruction=instruction, symbol=trade_data["Symbol"], quantity=obj["Qty"])
         else:
             stop_loss_order_builder.add_option_leg(instruction=instruction, symbol=trade_data["Pre_Symbol"], quantity=obj["Qty"])
 
         # Use one_cancels_other to create OCO order
-        oco_order = one_cancels_other(take_profit_order_builder.build(), stop_loss_order_builder.build())
+        oco_order = one_cancels_other(take_profit_order_builder.build(), stop_loss_order_builder.build()).build()
+        trigger_order = first_triggers_second(parent_order, oco_order)
 
         obj["childOrderStrategies"] = [oco_order]
 
-        return oco_order, obj
+        return trigger_order, obj

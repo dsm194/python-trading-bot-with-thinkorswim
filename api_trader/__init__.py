@@ -195,9 +195,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             spec_order = self.tdameritrade.getSpecificOrder(
                 queue_order["Order_ID"])
+            
+            orderMessage = spec_order.get('message', '')
 
             # ORDER ID NOT FOUND. ASSUME REMOVED OR PAPER TRADING
-            if "error" in spec_order['message'] or "Order not found" in spec_order['message']:
+            if "error" in orderMessage or "Order not found" in orderMessage:
 
                 custom = {
                     "price": queue_order["Entry_Price"] if queue_order["Direction"] == "OPEN POSITION" else queue_order["Exit_Price"],
@@ -334,32 +336,33 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             position = self.open_positions.find_one(
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
 
-            if position is None:
-                position = queue_order
+            if position is not None:
 
-            obj.update({
-                "Qty": position["Qty"],
-                "Entry_Price": position["Entry_Price"],
-                "Entry_Date": position["Entry_Date"],
-                "Exit_Price": price,
-                "Exit_Date": getDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
-            })
+                obj.update({
+                    "Qty": position["Qty"],
+                    "Entry_Price": position["Entry_Price"],
+                    "Entry_Date": position["Entry_Date"],
+                    "Exit_Price": price,
+                    "Exit_Date": getDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
+                })
 
-            # Check if the position is already in closed_positions
-            already_closed = self.closed_positions.count_documents(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, 
-                 "Entry_Date": position["Entry_Date"], "Entry_Price": position["Entry_Price"],
-                 "Exit_Price": price, "Qty": position["Qty"],})
+                # Check if the position is already in closed_positions
+                already_closed = self.closed_positions.count_documents(
+                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, 
+                    "Entry_Date": position["Entry_Date"], "Entry_Price": position["Entry_Price"],
+                    "Exit_Price": price, "Qty": position["Qty"],})
 
-            if already_closed == 0:
-                collection_insert = self.closed_positions.insert_one
-                message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
+                if already_closed == 0:
+                    collection_insert = self.closed_positions.insert_one
+                    message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
 
-            is_removed = self.open_positions.delete_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
+                is_removed = self.open_positions.delete_one(
+                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
 
-            if is_removed.deleted_count == 0:
-                self.logger.error(f"Failed to delete open position for {symbol}")
+                if is_removed.deleted_count == 0:
+                    self.logger.error(f"Failed to delete open position for {symbol}")
+
+            
 
         # Push to MongoDB with retry logic
         if collection_insert:

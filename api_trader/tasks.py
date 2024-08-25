@@ -38,7 +38,7 @@ class Tasks:
 
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.mongo.open_positions.find(
-            {"Trader": self.user["Name"], "Account_Position": "Paper"}))
+            {"Trader": self.user["Name"], "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
         strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
@@ -74,16 +74,14 @@ class Tasks:
                         self.logger.error(f"Quote not found or invalid for symbol: {symbol}")
                         continue
 
-                    isMarketOpen = marketHours[position["Asset_Type"].lower()][position["Asset_Type"].lower()]['isOpen']
-
-                    # market_status = normalized_market_hours.get(position["Asset_Type"].lower(), None)                    
-                    # if market_status:
-                    #     isMarketOpen = market_status.get('isOpen', None)
-                    # else:
-                    #     isMarketOpen = None
+                    # Safely check if 'EQ' exists in the marketHours structure and if the market is open
+                    equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours)
+                    equity_data = equity_data.get('EQ', equity_data)
+                    equity_data = equity_data.get(position["Asset_Type"].lower(), equity_data)
+                    isMarketOpen = equity_data.get('isOpen', False)
 
                     price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"] )
-                    
+
                     # Check for stop-loss or take-profit conditions
                     if price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
                         # Determine side of the order to close the position
