@@ -12,7 +12,6 @@ path = Path(THIS_FOLDER)
 load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 MONGO_URI = os.getenv('MONGO_URI')
-RUN_LIVE_TRADER = True if os.getenv('RUN_LIVE_TRADER') == "True" else False
 
 
 class MongoDB:

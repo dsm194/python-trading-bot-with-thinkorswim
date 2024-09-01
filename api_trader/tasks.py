@@ -4,6 +4,8 @@ import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+
+import httpcore
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getDatetime, selectSleep, modifiedAccountID
 from pymongo import UpdateOne
@@ -54,13 +56,34 @@ class Tasks:
         # Process symbols in chunks of 500
         symbols = list(positions_by_symbol.keys())
         batch_size = 500
+        quotes = {}
         for i in range(0, len(symbols), batch_size):
             # Batch the symbols for API call
             batch_symbols = symbols[i:i + batch_size]
-            quotes = self.tdameritrade.getQuotes(batch_symbols)
+
+            success = False
+            retries = 3  # Number of retries if a timeout occurs
+            while not success and retries > 0:
+                try:
+                    batch_quotes = self.tdameritrade.getQuotes(batch_symbols)
+                    quotes.update(batch_quotes)
+                    success = True
+                except httpcore.ConnectTimeout as e:
+                    retries -= 1
+                    print(f"Timeout occurred for batch {i//batch_size + 1}, retries left: {retries}")
+                    if retries > 0:
+                        time.sleep(2)  # Wait for 2 seconds before retrying
+                    else:
+                        print(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts.")
+                except Exception as e:
+                    print(f"An unexpected error occurred: {e}")
+                    break  # If another type of exception occurs, break the loop and stop retrying
 
             for symbol in batch_symbols:
                 
+                # Reset the price at the start of each loop iteration
+                price = None
+
                 for position in positions_by_symbol[symbol]:
                     strategy_object = strategy_dict.get(position["Strategy"])
 
@@ -83,7 +106,7 @@ class Tasks:
                     price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"] )
 
                     # Check for stop-loss or take-profit conditions
-                    if price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
+                    if price and price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
                         # Determine side of the order to close the position
                         position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                         self.sendOrder(position, strategy_object, "CLOSE POSITION")
@@ -102,7 +125,7 @@ class Tasks:
 
         # Fetch open OCO positions
         open_positions = self.open_positions.find(
-            {"Trader": self.user["Name"], "Order_Type": "OCO", "Account_Position": "Live"}
+            {"Trader": self.user["Name"], "Order_Type": "OCO"}
         )
 
         bulk_updates = []
@@ -113,51 +136,67 @@ class Tasks:
             childOrderStrategies = position["childOrderStrategies"]
             updates = {}
 
-            for order_id, order_data in childOrderStrategies.items():
-                # Query the order status only once per order_id
-                spec_order = self.tdameritrade.getSpecificOrder(order_id)
-                new_status = spec_order["status"]
+            for strategy in childOrderStrategies:
+                # Ensure 'childOrderStrategies' is in the strategy dictionary
+                if 'childOrderStrategies' in strategy:
+                    child_orders = strategy['childOrderStrategies']
 
-                # If order is filled, push the order and skip updating the position
-                if new_status == "FILLED":
-                    self.pushOrder(position, spec_order)
-                    break  # No need to check other orders in the same OCO group
+                    for order_data in child_orders:
+                        # Since 'order_id' is not shown in your structure, assume it needs to be derived or is not directly available
+                        # You'll likely need a method to map each order to its ID, so modify this section accordingly
+                        order_id = order_data.get("order_id")  # Replace with correct method to retrieve the order ID
+                        
+                        # If order_id is None, you might need to log or handle this case
+                        if not order_id:
+                            self.logger.warning(f"Order ID missing for strategy: {strategy}")
+                            continue
 
-                # Handle rejected/canceled orders
-                elif new_status in ["CANCELED", "REJECTED"]:
-                    other = {
-                        "Symbol": position["Symbol"],
-                        "Order_Type": position["Order_Type"],
-                        "Order_Status": new_status,
-                        "Strategy": position["Strategy"],
-                        "Trader": self.user["Name"],
-                        "Date": getDatetime(),
-                        "Account_ID": self.account_id
-                    }
-                    
-                    # Append the inserts to the respective lists
-                    if new_status == "REJECTED":
-                        rejected_inserts.append(other)
-                    else:
-                        canceled_inserts.append(other)
+                        updates = {}
 
-                    # Log the status
-                    self.logger.info(
-                        f"{new_status.upper()} ORDER For {position['Symbol']} - "
-                        f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
-                    )
-                else:
-                    # If status is not terminal, queue for bulk updates
-                    updates[f"childOrderStrategies.{order_id}.Order_Status"] = new_status
+                        # Query the order status using the order_id
+                        spec_order = self.tdameritrade.getSpecificOrder(order_id)
+                        new_status = spec_order["status"]
 
-            # If there are updates, queue them for the bulk update
-            if updates:
-                bulk_updates.append(
-                    UpdateOne(
-                        {"Trader": self.user["Name"], "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
-                        {"$set": updates}
-                    )
-                )
+                        # If the order is filled, handle it and stop processing further orders in this OCO group
+                        if new_status == "FILLED":
+                            self.pushOrder(position, spec_order)
+
+                        # Handle rejected or canceled orders
+                        elif new_status in ["CANCELED", "REJECTED"]:
+                            other = {
+                                "Symbol": position["Symbol"],
+                                "Order_Type": position["Order_Type"],
+                                "Order_Status": new_status,
+                                "Strategy": position["Strategy"],
+                                "Trader": self.user["Name"],
+                                "Date": getDatetime(),
+                                "Account_ID": self.account_id
+                            }
+                            
+                            # Append to the appropriate list based on the status
+                            if new_status == "REJECTED":
+                                rejected_inserts.append(other)
+                            else:
+                                canceled_inserts.append(other)
+
+                            # Log the status change
+                            self.logger.info(
+                                f"{new_status.upper()} ORDER For {position['Symbol']} - "
+                                f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
+                            )
+                        else:
+                            # If the status is not terminal, prepare the update for MongoDB
+                            updates[f"childOrderStrategies.{order_id}.Order_Status"] = new_status
+
+                        # Queue the updates for bulk execution
+                        if updates:
+                            bulk_updates.append(
+                                UpdateOne(
+                                    {"Trader": self.user["Name"], "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
+                                    {"$set": updates}
+                                )
+                            )
+
 
         # Perform bulk updates in MongoDB
         if bulk_updates:
