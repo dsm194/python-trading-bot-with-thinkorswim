@@ -1,11 +1,14 @@
 # imports
+from api_trader.strategies import fixed_percentage_exit
+from api_trader.strategies import atr_exit
+from api_trader.strategies import trailing_stop_exit
 from assets.helper_functions import getDatetime
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import json
 
-from schwab.orders.common import OrderType, OrderStrategyType, EquityInstruction, Duration, Session, one_cancels_other, first_triggers_second
-from schwab.orders.generic import OrderBuilder
+from schwab.orders.common import first_triggers_second
 from schwab.orders.equities import equity_buy_limit, equity_sell_limit
 from schwab.orders.options import option_buy_to_open_limit, option_sell_to_close_limit
 
@@ -17,8 +20,9 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 BUY_PRICE = os.getenv('BUY_PRICE')
 SELL_PRICE = os.getenv('SELL_PRICE')
-TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_PERCENTAGE'))
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENTAGE'))
+
+# Access the JSON blob and parse it into a dictionary
+default_strategy_settings = json.loads(os.getenv("DEFAULT_STRATEGY_SETTINGS"))
 
 # Define the AssetType enum manually
 class AssetType:
@@ -28,6 +32,7 @@ class AssetType:
 class OrderBuilderWrapper:
 
     def __init__(self):
+        self.strategy_cache = {}
 
         self.obj = {
             "Symbol": None,
@@ -43,6 +48,45 @@ class OrderBuilderWrapper:
             "Position_Type": None,
             "Direction": None
         }
+    
+    def load_default_settings(self, strategy_type):
+        # Load the default settings for the given strategy type from the config file
+        return default_strategy_settings.get(strategy_type, {})
+
+
+    def load_strategy(self, strategy_object):
+        strategy_name = strategy_object.get('Strategy')
+        
+        # Check if the strategy is already cached
+        if strategy_name in self.strategy_cache:
+            return self.strategy_cache[strategy_name]
+        
+        # If not cached, load the strategy
+        strategy = self._construct_exit_strategy(strategy_object)
+        
+        # Store it in the cache
+        self.strategy_cache[strategy_name] = strategy
+        
+        return strategy
+
+    def _construct_exit_strategy(self, strategy_object):
+        # Extract settings from the strategy_object or load defaults
+        settings = strategy_object.get('settings', {})
+        # Default to 'FixedPercentageExit' if 'type' is not provided
+        strategy_type = strategy_object.get('type', 'FixedPercentageExit')
+        
+        # If no settings provided, load default settings
+        if not settings:
+            settings = self.load_default_settings(strategy_type)
+        
+        if strategy_type == 'FixedPercentageExit':
+            return fixed_percentage_exit.FixedPercentageExitStrategy(settings)
+        elif strategy_type == 'TrailingStopExit':
+            return trailing_stop_exit.TrailingStopExitStrategy(settings)
+        # elif strategy_type == 'ATRExit':
+        #     return atr_exit.ATRExitStrategy(settings)
+        # Add other strategy types as needed
+
 
     def standardOrder(self, trade_data, strategy_object, direction, OCOorder=False):
 
@@ -93,6 +137,17 @@ class OrderBuilderWrapper:
             position_size = int(strategy_object["Position_Size"])
             shares = int(position_size / price) if asset_type == AssetType.EQUITY else int((position_size / 100) / price)
 
+            # Verify that position_size is less than 25% of available buying power
+            buying_power = self.tdameritrade.getBuyingPower()
+            
+            if buying_power is None or position_size >= 0.25 * buying_power:
+                self.logger.warning(
+                    f"Order stopped: {side} order for {symbol} not placed. "
+                    f"Required position size ${position_size} exceeds 25% of available buying power (${0.25 * buying_power}). "
+                    f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Available buying power: ${buying_power}"
+                )
+                return None, None
+
             if strategy_object["Active"] and shares > 0:
                 if asset_type == AssetType.EQUITY:
                     order = equity_buy_limit(symbol=trade_data["Symbol"], quantity=shares, price=priceAsString)
@@ -106,7 +161,7 @@ class OrderBuilderWrapper:
                     "Entry_Date": getDatetime()
                 })
             else:
-                self.logger.warning(f"{side} ORDER STOPPED: STRATEGY STATUS - {strategy_object['Active']} SHARES - {shares}")
+                self.logger.warning(f"{side} ORDER STOPPED: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; SYMBOL: {symbol}; SHARES: {shares}; PRICE: {price}; POSITION_SIZE: {position_size};")
                 return None, None
 
         # IF CLOSING A POSITION
@@ -131,55 +186,21 @@ class OrderBuilderWrapper:
 
     def OCOorder(self, trade_data, strategy_object, direction):
 
+        # Load the strategy using the new load_strategy method
+        strategy = self.load_strategy(strategy_object)
+
+        # Call standardOrder to get parent_order and obj
         parent_order, obj = self.standardOrder(trade_data, strategy_object, direction, OCOorder=True)
-        asset_type = AssetType.OPTION if "Pre_Symbol" in trade_data else AssetType.EQUITY
-        side = trade_data["Side"]
-        parentOrderPriceAsFloat = float(parent_order._price)
 
-        # GET THE INVERSE OF THE SIDE
-        instruction = {
-            "BUY_TO_OPEN": EquityInstruction.SELL,
-            "BUY": EquityInstruction.SELL,
-            "SELL": EquityInstruction.BUY,
-            "SELL_TO_OPEN": EquityInstruction.BUY,
-            "BUY_TO_COVER": EquityInstruction.SELL_SHORT,
-            "SELL_SHORT": EquityInstruction.BUY_TO_COVER
-        }[side]
+        # Check if parent_order is None
+        if parent_order is None:
+            self.logger.error("Parent order is None. Cannot proceed with the trade.")
+            return None, None  # Handle the situation as needed
 
-       # Create take profit order
-        take_profit_order_builder = (OrderBuilder()
-            .set_order_type(OrderType.LIMIT)
-            .set_session(Session.NORMAL)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_order_strategy_type(OrderStrategyType.SINGLE))
-        take_profit_order_builder_price = parentOrderPriceAsFloat * TAKE_PROFIT_PERCENTAGE
-        take_profit_order_builder_price = round(take_profit_order_builder_price, 2) if take_profit_order_builder_price >= 1 else round(take_profit_order_builder_price, 4)
-        take_profit_order_builder.set_price(str(take_profit_order_builder_price))
-        
-        if asset_type == AssetType.EQUITY:
-            take_profit_order_builder.add_equity_leg(instruction=instruction, symbol=trade_data["Symbol"], quantity=obj["Qty"])
-        else:
-            take_profit_order_builder.add_option_leg(instruction=instruction, symbol=trade_data["Pre_Symbol"], quantity=obj["Qty"])
+        exit_order = strategy.apply_exit_strategy(parent_order=parent_order)
 
-        # Create stop loss order
-        stop_loss_order_builder = (OrderBuilder()
-            .set_order_type(OrderType.STOP)
-            .set_session(Session.NORMAL)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_order_strategy_type(OrderStrategyType.SINGLE))
-        stop_loss_order_builder_price = parentOrderPriceAsFloat * STOP_LOSS_PERCENTAGE
-        stop_loss_order_builder_price = round(stop_loss_order_builder_price, 2) if stop_loss_order_builder_price >= 1 else round(stop_loss_order_builder_price, 4)
-        stop_loss_order_builder.set_stop_price(str(stop_loss_order_builder_price))
+        trigger_order = first_triggers_second(parent_order, exit_order)
 
-        if asset_type == AssetType.EQUITY:
-            stop_loss_order_builder.add_equity_leg(instruction=instruction, symbol=trade_data["Symbol"], quantity=obj["Qty"])
-        else:
-            stop_loss_order_builder.add_option_leg(instruction=instruction, symbol=trade_data["Pre_Symbol"], quantity=obj["Qty"])
-
-        # Use one_cancels_other to create OCO order
-        oco_order = one_cancels_other(take_profit_order_builder.build(), stop_loss_order_builder.build()).build()
-        trigger_order = first_triggers_second(parent_order, oco_order)
-
-        obj["childOrderStrategies"] = [oco_order]
+        obj["childOrderStrategies"] = [exit_order]
 
         return trigger_order, obj

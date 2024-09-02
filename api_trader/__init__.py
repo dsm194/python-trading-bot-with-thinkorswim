@@ -334,7 +334,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         elif direction == "CLOSE POSITION":
             position = self.open_positions.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
+                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id})
 
             if position is not None:
 

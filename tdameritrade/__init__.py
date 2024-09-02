@@ -229,7 +229,8 @@ class TDAmeritrade:
 
         account = self.getAccount()
 
-        buying_power = account["securitiesAccount"]["initialBalances"]["cashAvailableForTrading"]
+        # buying_power = account["securitiesAccount"]["initialBalances"]["cashAvailableForTrading"]
+        buying_power = account["securitiesAccount"]["initialBalances"]["cashBalance"]
 
         return float(buying_power)
 
