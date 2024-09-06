@@ -1,4 +1,5 @@
-from assets.helper_functions import getDatetime, modifiedAccountID
+import httpx
+from assets.helper_functions import assign_order_ids, getDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
 from threading import Thread
 from assets.exception_handler import exception_handler
@@ -94,6 +95,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
     # STEP ONE
     @exception_handler
     def sendOrder(self, trade_data, strategy_object, direction):
+        from schwab.utils import Utils
 
         symbol = trade_data["Symbol"]
 
@@ -119,12 +121,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         # PLACE ORDER IF LIVE TRADER ################################################
         if self.RUN_LIVE_TRADER:
 
-            resp = self.tdameritrade.placeTDAOrder(order)
+            order_details = self.tdameritrade.placeTDAOrder(order)
 
-            status_code = resp.status_code
-
-            if status_code not in [200, 201]:
-
+            if not order_details or "orderId" not in order_details:
+                # Handle the case where order placement failed
+                error_message = (order_details.json()).get("error", "Unknown error")
                 other = {
                     "Symbol": symbol,
                     "Order_Type": side,
@@ -136,23 +137,19 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 }
 
                 self.logger.info(
-                    f"{symbol} Rejected For {self.user['Name']} ({modifiedAccountID(self.account_id)}) - Reason: {(resp.json())['error']} ")
+                    f"{symbol} Rejected For {self.user['Name']} ({modifiedAccountID(self.account_id)}) - Reason: {error_message} ")
 
                 self.rejected.insert_one(other)
-
                 return
 
-            # GETS ORDER ID FROM RESPONSE HEADERS LOCATION
-            obj["Order_ID"] = int(
-                (resp.headers["Location"]).split("/")[-1].strip())
-
+            # Use the fully populated order details
+            # Need to revisit this.  
+            obj.update(order_details)
             obj["Account_Position"] = "Live"
-
         else:
-
-            obj["Order_ID"] = -1*randint(100_000_000, 999_999_999)
-
+            assign_order_ids(obj)
             obj["Account_Position"] = "Paper"
+            
 
         obj["Order_Status"] = "QUEUED"
 

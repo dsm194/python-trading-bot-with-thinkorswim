@@ -11,6 +11,7 @@ from schwab.auth import client_from_manual_flow
 from schwab.auth import client_from_login_flow
 from schwab.auth import client_from_token_file
 from schwab.client.base import BaseClient as schwabBaseClient
+from schwab.utils import Utils
 import os
 from dotenv import load_dotenv
 
@@ -92,9 +93,6 @@ class TDAmeritrade:
             self.users.update_one({"Name": self.user["Name"]}, {
                 "$set": {f"{self.account_id}.refresh_exp_date": (datetime.now().replace(
                     microsecond=0) + timedelta(days=90)).strftime("%Y-%m-%d")}})
-
-        #         self.header.update({
-        #             "Authorization": f"Bearer {token['access_token']}"})
 
         else:
 
@@ -187,38 +185,65 @@ class TDAmeritrade:
             return
 
     def placeTDAOrder(self, data):
-        """ METHOD PLACES ORDER
+        """Method places order and retrieves full order details if necessary.
 
         Args:
-            data ([dict]): ORDER DATA
+            data (dict): Order data.
 
         Returns:
-            [json]: ORDER RESPONSE INFO. USED TO RETRIEVE ORDER ID.
+            dict: Full order details including order IDs or None if failed.
         """
 
-        url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders"
+        is_valid = self.checkTokenValidity()
 
-        # return self.sendRequest(url, method="POST", data=data)
+        if not is_valid:
+            return None
 
-        isValid = self.checkTokenValidity()
+        resp = self.client.get_account_numbers()
+        if resp.status_code == httpx.codes.OK:
+            account_hash = resp.json()[0]['hashValue']
+            # Place the order
+            resp = self.client.place_order(account_hash, data)
 
-        if isValid:
-            resp = self.client.get_account_numbers()
-            if resp.status_code == httpx.codes.OK:
-                # The response has the following structure. If you have multiple linked
-                # accounts, you'll need to inspect this object to find the hash you want:
-                # [
-                #    {
-                #        "accountNumber": "123456789",
-                #        "hashValue":"123ABCXYZ"
-                #    }
-                #]
-                account_hash = resp.json()[0]['hashValue']
-                return self.client.place_order(account_hash, data)
-            else:
-                return
+        if resp.status_code not in [200, 201]:
+            return resp  # Return the raw response to handle errors
+
+        # Extract the main order ID
+        main_order_id = Utils(client=self.client, account_hash=account_hash).extract_order_id(resp)
+
+        if not main_order_id:
+            return None
+
+        detailed_resp = self.getSpecificOrder(main_order_id)
+
+        if detailed_resp:
+            # Rename 'orderId' to 'Order_ID' in the detailed response
+            detailed_resp = self.rename_order_ids(detailed_resp)
+            return detailed_resp  # Return the full order details as a dictionary
         else:
-            return
+            return {"Order_ID": main_order_id}  # Return basic info if full details are unavailable
+
+    def rename_order_ids(self, order_data):
+        """Recursively rename 'orderId' to 'Order_ID' in the order structure.
+
+        Args:
+            order_data (dict): The order data containing potential 'orderId' fields.
+
+        Returns:
+            dict: The updated order data with 'Order_ID' fields.
+        """
+        if isinstance(order_data, dict):
+            if 'orderId' in order_data:
+                order_data['Order_ID'] = order_data.pop('orderId')
+            if 'childOrderStrategies' in order_data:
+                for child_order in order_data['childOrderStrategies']:
+                    self.rename_order_ids(child_order)
+        elif isinstance(order_data, list):
+            for item in order_data:
+                self.rename_order_ids(item)
+        
+        return order_data
+
 
     def getBuyingPower(self):
         """ METHOD GETS BUYING POWER

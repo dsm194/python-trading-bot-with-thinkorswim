@@ -41,6 +41,7 @@ class Tasks:
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.mongo.open_positions.find(
             {"Trader": self.user["Name"], "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
+            # {"Trader": self.user["Name"], "Account_Position": "Paper"}))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
         strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
@@ -70,13 +71,13 @@ class Tasks:
                     success = True
                 except httpcore.ConnectTimeout as e:
                     retries -= 1
-                    print(f"Timeout occurred for batch {i//batch_size + 1}, retries left: {retries}")
+                    self.logger.warning(f"Timeout occurred for batch {i//batch_size + 1}, retries left: {retries}")
                     if retries > 0:
                         time.sleep(2)  # Wait for 2 seconds before retrying
                     else:
-                        print(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts.")
+                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts.")
                 except Exception as e:
-                    print(f"An unexpected error occurred: {e}")
+                    self.logger.error(f"An unexpected error occurred: {e}")
                     break  # If another type of exception occurs, break the loop and stop retrying
 
             for symbol in batch_symbols:
@@ -109,6 +110,8 @@ class Tasks:
                     if price and price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
                         # Determine side of the order to close the position
                         position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
+                        # If we are going to close the position, make sure we send just a single closing order by setting the strategy_object["Order_Type"] to "STANDARD"
+                        strategy_object["Order_Type"] = "STANDARD"
                         self.sendOrder(position, strategy_object, "CLOSE POSITION")
 
                     # Check for stop_signal.txt in each iteration
@@ -148,7 +151,7 @@ class Tasks:
                         
                         # If order_id is None, you might need to log or handle this case
                         if not order_id:
-                            self.logger.warning(f"Order ID missing for strategy: {strategy}")
+                            # self.logger.warning(f"Order ID missing for strategy: {strategy}")
                             continue
 
                         updates = {}

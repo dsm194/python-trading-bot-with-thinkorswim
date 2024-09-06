@@ -34,20 +34,6 @@ class OrderBuilderWrapper:
     def __init__(self):
         self.strategy_cache = {}
 
-        self.obj = {
-            "Symbol": None,
-            "Qty": None,
-            "Position_Size": None,
-            "Strategy": None,
-            "Trader": self.user["Name"],
-            "Order_ID": None,
-            "Order_Status": None,
-            "Side": None,
-            "Asset_Type": None,
-            "Account_ID": self.account_id,
-            "Position_Type": None,
-            "Direction": None
-        }
     
     def load_default_settings(self, strategy_type):
         # Load the default settings for the given strategy type from the config file
@@ -55,7 +41,7 @@ class OrderBuilderWrapper:
 
 
     def load_strategy(self, strategy_object):
-        strategy_name = strategy_object.get('Strategy')
+        strategy_name = strategy_object.get('ExitStrategy')
         
         # Check if the strategy is already cached
         if strategy_name in self.strategy_cache:
@@ -70,22 +56,41 @@ class OrderBuilderWrapper:
         return strategy
 
     def _construct_exit_strategy(self, strategy_object):
-        # Extract settings from the strategy_object or load defaults
-        settings = strategy_object.get('settings', {})
-        # Default to 'FixedPercentageExit' if 'type' is not provided
-        strategy_type = strategy_object.get('type', 'FixedPercentageExit')
+        # import json
+        # Default to 'FixedPercentageExit' if 'ExitStrategy' is not provided
+        strategy_type = strategy_object.get('ExitStrategy', 'FixedPercentageExit')
+
+        # Extract settings from the strategy_object and ensure it's a dictionary
+        settings = strategy_object.get('ExitStrategySettings', {})
+
+        # If settings is a string (as it might be in MongoDB), try to parse it into a dictionary
+        if isinstance(settings, str):
+            try:
+                settings = json.loads(settings)
+            except json.JSONDecodeError:
+                # If the string cannot be parsed into a dictionary, reset to an empty dictionary
+                settings = {}
+
+        # Retrieve the sub-settings for the strategy_type
+        strategy_specific_settings = settings.get(strategy_type)
+
+        # If no specific settings found, load default settings
+        if strategy_specific_settings is None:
+            strategy_specific_settings = self.load_default_settings(strategy_type)
         
-        # If no settings provided, load default settings
-        if not settings:
-            settings = self.load_default_settings(strategy_type)
-        
+        # Update settings with the strategy-specific settings
+        settings[strategy_type] = strategy_specific_settings
+
+        # Instantiate the correct exit strategy based on the strategy_type
         if strategy_type == 'FixedPercentageExit':
-            return fixed_percentage_exit.FixedPercentageExitStrategy(settings)
+            return fixed_percentage_exit.FixedPercentageExitStrategy(settings[strategy_type])
         elif strategy_type == 'TrailingStopExit':
-            return trailing_stop_exit.TrailingStopExitStrategy(settings)
+            return trailing_stop_exit.TrailingStopExitStrategy(settings[strategy_type])
         # elif strategy_type == 'ATRExit':
-        #     return atr_exit.ATRExitStrategy(settings)
+        #     return atr_exit.ATRExitStrategy(settings[strategy_type])
         # Add other strategy types as needed
+
+
 
 
     def standardOrder(self, trade_data, strategy_object, direction, OCOorder=False):
@@ -99,21 +104,27 @@ class OrderBuilderWrapper:
         ##############################################################
 
         # MONGO OBJECT
-        self.obj.update({
+        obj = {
             "Symbol": symbol,
+            "Qty": None,
+            "Position_Size": None,
             "Strategy": strategy,
+            "Trader": self.user["Name"],
+            "Order_ID": None,
+            "Order_Status": None,
             "Side": side,
             "Asset_Type": asset_type,
+            "Account_ID": self.account_id,
             "Position_Type": strategy_object["Position_Type"],
             "Order_Type": strategy_object["Order_Type"],
             "Direction": direction
-        })
+        }
 
         ##############################################################
 
         # IF OPTION
         if asset_type == AssetType.OPTION:
-            self.obj.update({
+            obj.update({
                 "Pre_Symbol": trade_data["Pre_Symbol"],
                 "Exp_Date": trade_data["Exp_Date"],
                 "Option_Type": trade_data["Option_Type"]
@@ -137,16 +148,16 @@ class OrderBuilderWrapper:
             position_size = int(strategy_object["Position_Size"])
             shares = int(position_size / price) if asset_type == AssetType.EQUITY else int((position_size / 100) / price)
 
-            # Verify that position_size is less than 25% of available buying power
-            buying_power = self.tdameritrade.getBuyingPower()
+            # # Verify that position_size is less than 25% of available buying power
+            # buying_power = self.tdameritrade.getBuyingPower()
             
-            if buying_power is None or position_size >= 0.25 * buying_power:
-                self.logger.warning(
-                    f"Order stopped: {side} order for {symbol} not placed. "
-                    f"Required position size ${position_size} exceeds 25% of available buying power (${0.25 * buying_power}). "
-                    f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Available buying power: ${buying_power}"
-                )
-                return None, None
+            # if buying_power is None or position_size >= 0.25 * buying_power:
+            #     self.logger.warning(
+            #         f"Order stopped: {side} order for {symbol} not placed. "
+            #         f"Required position size ${position_size} exceeds 25% of available buying power (${0.25 * buying_power}). "
+            #         f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Available buying power: ${buying_power}"
+            #     )
+            #     return None, None
 
             if strategy_object["Active"] and shares > 0:
                 if asset_type == AssetType.EQUITY:
@@ -154,7 +165,7 @@ class OrderBuilderWrapper:
                 else:
                     order = option_buy_to_open_limit(symbol=trade_data["Pre_Symbol"], quantity=shares, price=priceAsString)
                     
-                self.obj.update({
+                obj.update({
                     "Qty": shares,
                     "Position_Size": position_size,
                     "Entry_Price": price,
@@ -172,7 +183,7 @@ class OrderBuilderWrapper:
             else:
                 order = option_sell_to_close_limit(symbol=trade_data["Pre_Symbol"], quantity=trade_data["Qty"], price=priceAsString)
 
-            self.obj.update({
+            obj.update({
                 "Entry_Price": trade_data["Entry_Price"],
                 "Entry_Date": trade_data["Entry_Date"],
                 "Exit_Price": price,
@@ -182,7 +193,7 @@ class OrderBuilderWrapper:
             })
         ############################################################################
 
-        return order, self.obj
+        return order, obj
 
     def OCOorder(self, trade_data, strategy_object, direction):
 
@@ -190,17 +201,20 @@ class OrderBuilderWrapper:
         strategy = self.load_strategy(strategy_object)
 
         # Call standardOrder to get parent_order and obj
-        parent_order, obj = self.standardOrder(trade_data, strategy_object, direction, OCOorder=True)
+        order, obj = self.standardOrder(trade_data, strategy_object, direction, OCOorder=True)
 
         # Check if parent_order is None
-        if parent_order is None:
+        if order is None:
             self.logger.error("Parent order is None. Cannot proceed with the trade.")
             return None, None  # Handle the situation as needed
 
-        exit_order = strategy.apply_exit_strategy(parent_order=parent_order)
+        if direction == "OPEN POSITION":
+            exit_order = strategy.apply_exit_strategy(parent_order=order)
 
-        trigger_order = first_triggers_second(parent_order, exit_order)
+            order = first_triggers_second(order, exit_order)
 
-        obj["childOrderStrategies"] = [exit_order]
+            obj["childOrderStrategies"] = [exit_order]
+        else:
+            obj["childOrderStrategies"] = trade_data["childOrderStrategies"]
 
-        return trigger_order, obj
+        return order, obj

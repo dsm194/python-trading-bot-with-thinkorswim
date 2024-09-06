@@ -74,3 +74,17 @@ def selectSleep():
 def modifiedAccountID(account_id):
 
     return '*' * (len(str(account_id)) - 4) + str(account_id)[-4:]
+
+def assign_order_ids(order_strategy):
+    import random
+
+    """Recursively assign order IDs to child orders, updating 'Order_ID'."""
+    if isinstance(order_strategy, dict):
+        # Add or update 'Order_ID' if it's not present or is None
+        if "Order_ID" not in order_strategy or order_strategy["Order_ID"] is None:
+            order_strategy["Order_ID"] = -random.randint(100_000_000, 999_999_999)
+        
+        # Recursively assign order IDs to any childOrderStrategies
+        if "childOrderStrategies" in order_strategy:
+            for child in order_strategy["childOrderStrategies"]:
+                assign_order_ids(child)
