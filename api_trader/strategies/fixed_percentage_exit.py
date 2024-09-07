@@ -2,24 +2,40 @@ from api_trader.strategies.exit_strategy import ExitStrategy
 from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, one_cancels_other
 from schwab.orders.generic import OrderBuilder
 
-
 class FixedPercentageExitStrategy(ExitStrategy):
-    
-    def apply_exit_strategy(self, parent_order):
-        from api_trader.order_builder import AssetType
+
+    def should_exit(self, additional_params):
         
-        # Extract necessary details from the parent_order
-        entry_price = float(parent_order._price)
-        qty = parent_order._orderLegCollection[0]['quantity']
-        symbol = parent_order._orderLegCollection[0]['instrument']._symbol
-        assetType = parent_order._orderLegCollection[0]['instrument']._assetType
-        side = parent_order._orderLegCollection[0]['instruction']
-        take_profit_percentage = self.strategy_settings.get("take_profit_percentage")   #TODO: define defaults at this point?
+        last_price = additional_params['last_price']
+        entry_price = additional_params['entry_price']
+        take_profit_percentage = self.strategy_settings.get("take_profit_percentage")
         stop_loss_percentage = self.strategy_settings.get("stop_loss_percentage")
 
-        # Calculate take-profit and stop-loss prices
         take_profit_price = entry_price * (1 + take_profit_percentage)
         stop_loss_price = entry_price * (1 - stop_loss_percentage)
+
+        return {
+            "exit": last_price <= stop_loss_price or last_price >= take_profit_price,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": stop_loss_price,
+            "additional_params": additional_params,
+            "reason": "OCO"
+        }
+
+    def create_exit_order(self, exit_result):
+        from api_trader.order_builder import AssetType
+
+        """
+        Builds an OCO (One-Cancels-Other) order with both take-profit and stop-loss.
+        """
+
+        take_profit_price = exit_result['take_profit_price']
+        stop_loss_price = exit_result['stop_loss_price']
+        additional_params = exit_result['additional_params']
+        symbol = additional_params['symbol']
+        qty = additional_params['quantity']
+        side = additional_params['side']
+        assetType = additional_params['assetType']
 
         # Round prices for order placement
         take_profit_price = round(take_profit_price, 2) if take_profit_price >= 1 else round(take_profit_price, 4)
@@ -56,5 +72,4 @@ class FixedPercentageExitStrategy(ExitStrategy):
 
         # Return the OCO order
         return one_cancels_other(take_profit_order_builder.build(), stop_loss_order_builder.build()).build()
-
-
+    

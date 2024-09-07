@@ -169,7 +169,8 @@ class OrderBuilderWrapper:
                     "Qty": shares,
                     "Position_Size": position_size,
                     "Entry_Price": price,
-                    "Entry_Date": getDatetime()
+                    "Last_Price": price,
+                    "Entry_Date": getDatetime(),
                 })
             else:
                 self.logger.warning(f"{side} ORDER STOPPED: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; SYMBOL: {symbol}; SHARES: {shares}; PRICE: {price}; POSITION_SIZE: {position_size};")
@@ -187,6 +188,7 @@ class OrderBuilderWrapper:
                 "Entry_Price": trade_data["Entry_Price"],
                 "Entry_Date": trade_data["Entry_Date"],
                 "Exit_Price": price,
+                "Last_Price": price,
                 "Exit_Date": getDatetime(),
                 "Qty": trade_data["Qty"],
                 "Position_Size": trade_data["Position_Size"]
@@ -209,7 +211,7 @@ class OrderBuilderWrapper:
             return None, None  # Handle the situation as needed
 
         if direction == "OPEN POSITION":
-            exit_order = strategy.apply_exit_strategy(parent_order=order)
+            exit_order = strategy.apply_exit_strategy(obj)
 
             order = first_triggers_second(order, exit_order)
 

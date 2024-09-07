@@ -4,16 +4,45 @@ from schwab.orders.generic import OrderBuilder
 
 class TrailingStopExitStrategy(ExitStrategy):
 
-    def apply_exit_strategy(self, parent_order):
-        from api_trader.order_builder import AssetType
+    def should_exit(self, additional_params):
 
-        # Extract necessary details from the parent_order
-        # entry_price = float(parent_order._price)
-        qty = parent_order._orderLegCollection[0]['quantity']
-        symbol = parent_order._orderLegCollection[0]['instrument']._symbol
-        assetType = parent_order._orderLegCollection[0]['instrument']._assetType
-        side = parent_order._orderLegCollection[0]['instruction']
+        last_price = additional_params['last_price']
+        # Track the highest price observed so far (can be stored in additional_params or in the database)
+        max_price = additional_params.get('max_price', last_price)  # Default to last_price if not yet set
         trailing_stop_percentage = self.strategy_settings.get("trailing_stop_percentage")
+
+        # Update max_price if the current price is higher than the previous max_price
+        if last_price > max_price:
+            max_price = last_price
+
+        # Calculate the trailing stop price based on the highest price observed
+        trailing_stop_price = max_price * (1 - trailing_stop_percentage)
+
+        # Store the updated max_price back into additional_params
+        additional_params['max_price'] = max_price
+
+        # Return the exit condition along with the updated trailing stop price and max_price
+        return {
+            "exit": last_price <= trailing_stop_price,
+            "trailing_stop_price": trailing_stop_price,
+            "max_price": max_price,
+            "additional_params": additional_params,
+            "reason": "Trailing Stop"
+        }
+
+
+    def create_exit_order(self, exit_result):
+        from api_trader.order_builder import AssetType
+        """
+        Builds a single trailing stop order.
+        """
+        trailing_stop_percentage = self.strategy_settings.get("trailing_stop_percentage")
+        # trailing_stop_price = exit_result['trailing_stop_price']
+        additional_params = exit_result['additional_params']  # Access additional_params
+        symbol = additional_params['symbol']
+        qty = additional_params['quantity']
+        side = additional_params['side']
+        assetType = additional_params['assetType']
 
         # Determine the instruction (inverse of the side)
         instruction = self.get_instruction_for_side(side=side)
@@ -35,3 +64,4 @@ class TrailingStopExitStrategy(ExitStrategy):
 
         # Return the built trailing stop order
         return trailing_stop_order_builder.build()
+    

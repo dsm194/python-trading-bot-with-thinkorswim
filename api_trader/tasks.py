@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-import httpcore
+import httpx
+from api_trader.order_builder import OrderBuilderWrapper
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getDatetime, selectSleep, modifiedAccountID
 from pymongo import UpdateOne
@@ -16,8 +17,6 @@ path = Path(THIS_FOLDER)
 
 load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
-TAKE_PROFIT_PERCENTAGE = float(os.getenv('TAKE_PROFIT_PERCENTAGE'))
-STOP_LOSS_PERCENTAGE = float(os.getenv('STOP_LOSS_PERCENTAGE'))
 
 class Tasks:
 
@@ -47,6 +46,11 @@ class Tasks:
         strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
         strategy_dict = {strategy["Strategy"]: strategy for strategy in strategies}
 
+        # Load exit strategies and store them in strategy_dict
+        for strategy_name, strategy_data in strategy_dict.items():
+            strategy_object = OrderBuilderWrapper().load_strategy(strategy_data) # self.load_exit_strategy(strategy_data)
+            strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
+
         positions_by_symbol = {}
         for position in open_positions:
             symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
@@ -69,7 +73,7 @@ class Tasks:
                     batch_quotes = self.tdameritrade.getQuotes(batch_symbols)
                     quotes.update(batch_quotes)
                     success = True
-                except httpcore.ConnectTimeout as e:
+                except httpx.ConnectTimeout as e:
                     retries -= 1
                     self.logger.warning(f"Timeout occurred for batch {i//batch_size + 1}, retries left: {retries}")
                     if retries > 0:
@@ -86,11 +90,14 @@ class Tasks:
                 price = None
 
                 for position in positions_by_symbol[symbol]:
-                    strategy_object = strategy_dict.get(position["Strategy"])
+                    strategy_name = position["Strategy"]
+                    strategy_data = strategy_dict.get(strategy_name)
 
-                    if not strategy_object:
-                        self.logger.warning(f"Strategy not found for position: {position['_id']}")
+                    if not strategy_data or "ExitStrategy" not in strategy_data:
+                        self.logger.warning(f"Exit strategy not found for position: {position['_id']}")
                         continue
+
+                    exit_strategy = strategy_data["ExitStrategy"]
 
                     quote = quotes.get(symbol)
 
@@ -104,15 +111,32 @@ class Tasks:
                     equity_data = equity_data.get(position["Asset_Type"].lower(), equity_data)
                     isMarketOpen = equity_data.get('isOpen', False)
 
-                    price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"] )
+                    price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"])
+                    last_price = quote["quote"]["lastPrice"]
+                    max_price = quote["quote"]["highPrice"]
 
-                    # Check for stop-loss or take-profit conditions
-                    if price and price <= (position["Entry_Price"] * STOP_LOSS_PERCENTAGE) or price >= (position["Entry_Price"] * TAKE_PROFIT_PERCENTAGE):
-                        # Determine side of the order to close the position
+                    # Prepare additional params if needed
+                    additional_params = {
+                        "last_price": price,
+                        "entry_price": position["Entry_Price"],
+                        "quantity": position["Qty"],
+                        # Add any other necessary params here
+                        "last_price": last_price,
+                        "max_price": max_price,
+                    }
+
+                    # Call the should_exit method to check for exit conditions
+                    exit_result = exit_strategy.should_exit(additional_params)
+                    should_exit = exit_result['exit']
+                    
+                    # Update the max_price in the position data
+                    position["max_price"] = exit_result["max_price"]
+
+                    if should_exit:
+                        # The exit conditions are met, so we need to close the position
                         position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
-                        # If we are going to close the position, make sure we send just a single closing order by setting the strategy_object["Order_Type"] to "STANDARD"
-                        strategy_object["Order_Type"] = "STANDARD"
-                        self.sendOrder(position, strategy_object, "CLOSE POSITION")
+                        strategy_data["Order_Type"] = "STANDARD"
+                        self.sendOrder(position, strategy_data, "CLOSE POSITION")
 
                     # Check for stop_signal.txt in each iteration
                     if os.path.isfile(self.stop_signal_file):
