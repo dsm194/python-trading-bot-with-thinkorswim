@@ -4,6 +4,10 @@ from schwab.orders.generic import OrderBuilder
 
 class FixedPercentageExitStrategy(ExitStrategy):
 
+    def __init__(self, strategy_settings, order_builder_cls=OrderBuilder):
+        super().__init__(strategy_settings)
+        self.order_builder_cls = order_builder_cls
+
     def should_exit(self, additional_params):
         
         last_price = additional_params['last_price']
@@ -12,7 +16,9 @@ class FixedPercentageExitStrategy(ExitStrategy):
         stop_loss_percentage = self.strategy_settings.get("stop_loss_percentage")
 
         take_profit_price = entry_price * (1 + take_profit_percentage)
+        take_profit_price = round(take_profit_price, 2) if take_profit_price >= 1 else round(take_profit_price, 4)
         stop_loss_price = entry_price * (1 - stop_loss_percentage)
+        stop_loss_price = round(stop_loss_price, 2) if stop_loss_price >= 1 else round(stop_loss_price, 4)
 
         return {
             "exit": last_price <= stop_loss_price or last_price >= take_profit_price,
@@ -45,11 +51,11 @@ class FixedPercentageExitStrategy(ExitStrategy):
         instruction = self.get_instruction_for_side(side=side)
 
         # Create take profit order
-        take_profit_order_builder = (OrderBuilder()
-            .set_order_type(OrderType.LIMIT)
-            .set_session(Session.NORMAL)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_order_strategy_type(OrderStrategyType.SINGLE))
+        take_profit_order_builder = self.order_builder_cls()
+        take_profit_order_builder.set_order_type(OrderType.LIMIT)
+        take_profit_order_builder.set_session(Session.NORMAL)
+        take_profit_order_builder.set_duration(Duration.GOOD_TILL_CANCEL)
+        take_profit_order_builder.set_order_strategy_type(OrderStrategyType.SINGLE)
         take_profit_order_builder.set_price(str(take_profit_price))
 
         if assetType == AssetType.EQUITY:
@@ -58,11 +64,11 @@ class FixedPercentageExitStrategy(ExitStrategy):
             take_profit_order_builder.add_option_leg(instruction=instruction, symbol=symbol, quantity=qty)
 
         # Create stop loss order
-        stop_loss_order_builder = (OrderBuilder()
-            .set_order_type(OrderType.STOP)
-            .set_session(Session.NORMAL)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_order_strategy_type(OrderStrategyType.SINGLE))
+        stop_loss_order_builder = self.order_builder_cls()
+        stop_loss_order_builder.set_order_type(OrderType.STOP)
+        stop_loss_order_builder.set_session(Session.NORMAL)
+        stop_loss_order_builder.set_duration(Duration.GOOD_TILL_CANCEL)
+        stop_loss_order_builder.set_order_strategy_type(OrderStrategyType.SINGLE)
         stop_loss_order_builder.set_stop_price(str(stop_loss_price))
 
         if assetType == AssetType.EQUITY:

@@ -1,5 +1,6 @@
 
 # imports
+import random
 import time
 from dotenv import load_dotenv
 from pathlib import Path
@@ -39,8 +40,8 @@ class Tasks:
 
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.mongo.open_positions.find(
-            {"Trader": self.user["Name"], "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
-            # {"Trader": self.user["Name"], "Account_Position": "Paper"}))
+            # {"Trader": self.user["Name"], "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
+            {"Trader": self.user["Name"], "Account_Position": "Paper"}))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
         strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
@@ -68,18 +69,31 @@ class Tasks:
 
             success = False
             retries = 3  # Number of retries if a timeout occurs
+            backoff_time = 2  # Start with a 2-second delay
+
             while not success and retries > 0:
                 try:
                     batch_quotes = self.tdameritrade.getQuotes(batch_symbols)
                     quotes.update(batch_quotes)
                     success = True
+                except httpx.ReadTimeout as e:
+                    retries -= 1
+                    self.logger.warning(f"Read operation timed out for batch {i//batch_size + 1}, retries left: {retries}, exception: {e}")
+                    if retries > 0:
+                        backoff_time *= 2  # Exponential backoff
+                        time.sleep(backoff_time + random.uniform(0, 1))  # Add a small random delay
+                        self.logger.info(f"Retrying after timeout with backoff of {backoff_time} seconds...")
+                    else:
+                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts due to ReadTimeout. Exception: {e}")
                 except httpx.ConnectTimeout as e:
                     retries -= 1
-                    self.logger.warning(f"Timeout occurred for batch {i//batch_size + 1}, retries left: {retries}")
+                    self.logger.warning(f"Connection timed out for batch {i//batch_size + 1}, retries left: {retries}, exception: {e}")
                     if retries > 0:
-                        time.sleep(2)  # Wait for 2 seconds before retrying
+                        backoff_time *= 2  # Exponential backoff
+                        time.sleep(backoff_time + random.uniform(0, 1))
+                        self.logger.info(f"Retrying after connection timeout with backoff of {backoff_time} seconds...")
                     else:
-                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts.")
+                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts due to ConnectTimeout. Exception: {e}")
                 except Exception as e:
                     self.logger.error(f"An unexpected error occurred: {e}")
                     break  # If another type of exception occurs, break the loop and stop retrying
@@ -111,13 +125,12 @@ class Tasks:
                     equity_data = equity_data.get(position["Asset_Type"].lower(), equity_data)
                     isMarketOpen = equity_data.get('isOpen', False)
 
-                    price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"])
+                    # price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"])
                     last_price = quote["quote"]["lastPrice"]
                     max_price = quote["quote"]["highPrice"]
 
                     # Prepare additional params if needed
                     additional_params = {
-                        "last_price": price,
                         "entry_price": position["Entry_Price"],
                         "quantity": position["Qty"],
                         # Add any other necessary params here
@@ -130,7 +143,7 @@ class Tasks:
                     should_exit = exit_result['exit']
                     
                     # Update the max_price in the position data
-                    position["max_price"] = exit_result["max_price"]
+                    position["max_price"] = exit_result["additional_params"]["max_price"]
 
                     if should_exit:
                         # The exit conditions are met, so we need to close the position

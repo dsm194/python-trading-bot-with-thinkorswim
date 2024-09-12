@@ -145,6 +145,10 @@ class OrderBuilderWrapper:
         # IF OPENING A POSITION
         if direction == "OPEN POSITION":
 
+            if price == 0:
+                self.logger.error(f"Price is zero for asset - cannot calculate shares: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; {side}; SYMBOL: {symbol}; PRICE: {price}; QUOTE {resp};")
+                raise ValueError("Price cannot be zero.")
+
             position_size = int(strategy_object["Position_Size"])
             shares = int(position_size / price) if asset_type == AssetType.EQUITY else int((position_size / 100) / price)
 

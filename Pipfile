@@ -19,6 +19,9 @@ pytz = "*"
 psutil = "*"
 certifi = "*"
 pypi = "*"
+pytest = "*"
+pytest-cov = "*"
+coverage = "*"
 
 [requires]
 python_version = "3.8"

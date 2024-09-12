@@ -4,6 +4,10 @@ from schwab.orders.generic import OrderBuilder
 
 class TrailingStopExitStrategy(ExitStrategy):
 
+    def __init__(self, strategy_settings, order_builder_cls=OrderBuilder):
+        super().__init__(strategy_settings)
+        self.order_builder_cls = order_builder_cls
+
     def should_exit(self, additional_params):
 
         last_price = additional_params['last_price']
@@ -25,7 +29,6 @@ class TrailingStopExitStrategy(ExitStrategy):
         return {
             "exit": last_price <= trailing_stop_price,
             "trailing_stop_price": trailing_stop_price,
-            "max_price": max_price,
             "additional_params": additional_params,
             "reason": "Trailing Stop"
         }
@@ -48,14 +51,14 @@ class TrailingStopExitStrategy(ExitStrategy):
         instruction = self.get_instruction_for_side(side=side)
 
         # Create trailing stop order
-        trailing_stop_order_builder = (OrderBuilder()
-            .set_order_type(OrderType.TRAILING_STOP)
-            .set_session(Session.NORMAL)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_order_strategy_type(OrderStrategyType.SINGLE)
-            .set_stop_price_link_type(StopPriceLinkType.PERCENT)
-            .set_stop_price_link_basis(StopPriceLinkBasis.MARK)
-            .set_stop_price_offset(100 * trailing_stop_percentage))
+        trailing_stop_order_builder = self.order_builder_cls()
+        trailing_stop_order_builder.set_order_type(OrderType.TRAILING_STOP)
+        trailing_stop_order_builder.set_session(Session.NORMAL)
+        trailing_stop_order_builder.set_duration(Duration.GOOD_TILL_CANCEL)
+        trailing_stop_order_builder.set_order_strategy_type(OrderStrategyType.SINGLE)
+        trailing_stop_order_builder.set_stop_price_link_type(StopPriceLinkType.PERCENT)
+        trailing_stop_order_builder.set_stop_price_link_basis(StopPriceLinkBasis.MARK)
+        trailing_stop_order_builder.set_stop_price_offset(100 * trailing_stop_percentage)
 
         if assetType == AssetType.EQUITY:
             trailing_stop_order_builder.add_equity_leg(instruction=instruction, symbol=symbol, quantity=qty)
