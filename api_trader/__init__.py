@@ -36,6 +36,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
         
         try:
+            # Call the __init__ method of both Tasks and OrderBuilderWrapper
+            super().__init__()
             self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
 
             # Instance variables

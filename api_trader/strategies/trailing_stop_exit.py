@@ -11,8 +11,9 @@ class TrailingStopExitStrategy(ExitStrategy):
     def should_exit(self, additional_params):
 
         last_price = additional_params['last_price']
+        entry_price = additional_params['entry_price']
         # Track the highest price observed so far (can be stored in additional_params or in the database)
-        max_price = additional_params.get('max_price', last_price)  # Default to last_price if not yet set
+        max_price = additional_params.get('max_price', entry_price)  # Start max_price at entry price
         trailing_stop_percentage = self.strategy_settings.get("trailing_stop_percentage")
 
         # Update max_price if the current price is higher than the previous max_price

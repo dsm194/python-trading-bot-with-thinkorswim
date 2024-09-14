@@ -1,3 +1,5 @@
+import random
+import string
 from unittest.mock import PropertyMock, patch, MagicMock, ANY
 import unittest
 
@@ -62,6 +64,7 @@ class TestApiTrader(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.run_tasks_with_exit_check')
     def test_initialization_live_trader(self, mock_run_tasks_with_exit_check):
+        
         # Check if the initialization sets RUN_LIVE_TRADER to True
         self.assertTrue(self.api_trader.RUN_LIVE_TRADER)
         self.assertIsInstance(self.api_trader.mongo.users, MagicMock)
@@ -466,6 +469,57 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.updateStatus.assert_called()  # Ensure status is updated
         mock_sendOrder.assert_called_once()
 
+    @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
+    @patch('api_trader.ApiTrader.sendOrder')
+    def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
+
+        # Mock relevant methods/attributes used in run_trader
+        self.api_trader.queue = MagicMock()
+        self.api_trader.user = MagicMock()
+        self.api_trader.mongo = MagicMock()
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
+        self.api_trader.updateStatus = MagicMock()
+        
+        # Mock dependencies
+        self.api_trader.mongo = MagicMock()
+        self.api_trader.tdameritrade = MagicMock()
+        self.api_trader.logger = MagicMock()
+
+        # Generate dynamic test data for round-trip orders
+        open_positions, strategies, quotes = generate_test_data_for_run_trader(num_positions=10)
+
+        # Mock the mongo collections to return generated data
+        self.api_trader.mongo.open_positions.find.return_value = open_positions
+        self.api_trader.mongo.strategies.find.return_value = strategies
+
+        # Mock the getQuotes method to return simulated quotes data
+        self.api_trader.tdameritrade.getQuotes.return_value = quotes
+
+        # Mock queue.find_one to simulate unqueued orders
+        self.api_trader.queue.find_one.return_value = None
+
+        # Mock strategies.find_one to return the correct strategy object
+        def mock_find_strategy(query):
+            strategy_name = query.get("Strategy")
+            for strategy in strategies:
+                if strategy["Strategy"] == strategy_name:
+                    return strategy
+            return None
+
+        self.api_trader.strategies.find_one.side_effect = mock_find_strategy
+
+        # Call runTrader with the mock data
+        trade_data = [{"Symbol": position["Symbol"], "Strategy": position["Strategy"], "Side": position["Side"], 'Asset_Type': position["Asset_Type"]} for position in open_positions]
+        self.api_trader.runTrader(trade_data=trade_data)
+
+        # Add assertions here
+        self.api_trader.open_positions.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.queue.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.strategies.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.updateStatus.assert_called()  # Ensure status is updated
+        mock_sendOrder.assert_called()
+
 
     def test_initialization_error_handling(self):
         # Create a mock mongo object
@@ -489,43 +543,37 @@ class TestApiTrader(unittest.TestCase):
 
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_checkOCOpapertriggers_retry_logic_with_timeout(self, mock_init):
+    @patch('api_trader.strategies.fixed_percentage_exit.FixedPercentageExitStrategy')  # Mocking ExitStrategy
+    def test_checkOCOpapertriggers_retry_logic_with_timeout(self, mock_exit_strategy, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock instance attributes
+        # Mock instance attributes
         self.api_trader.logger = MagicMock()
         self.api_trader.mongo = MagicMock()
         self.api_trader.user = MagicMock()
-        self.api_trader.account_id = MagicMock()
+        self.api_trader.queue = MagicMock()
+        self.api_trader.rejected = MagicMock()
+        self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
         self.api_trader.tdameritrade = MagicMock()
-        self.api_trader.stop_signal_file = "mock_stop_signal_file"
+        self.api_trader.stop_signal_file = "mock_stop_signal_file"  # Add this line to mock the stop_signal_file
+        self.api_trader.RUN_LIVE_TRADER = True  # Mock or set RUN_LIVE_TRADER attribute
 
-        # Mock open positions
+        # Mock open_positions
+        num_positions = 1
         mock_open_positions = MagicMock()
-        mock_open_positions.find.return_value = [
-            {
-                "_id": "position1",
-                "Symbol": "AAPL",
-                "Asset_Type": "EQUITY",
-                "Strategy": "MACD_XVER_8_17_9_EXP_DEBUG",
-                "Entry_Price": 150.00,
-                "Qty": 10,
-                "Position_Type": "LONG",
-                "Side": "BUY",
-                "Pre_Symbol": "AAPL"
-            }
-        ]
+        mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
         self.api_trader.mongo.open_positions = mock_open_positions
-        self.api_trader.mongo.strategies = MagicMock()
-        self.api_trader.mongo.strategies.find.return_value = [
-            {"Strategy": "MACD_XVER_8_17_9_EXP_DEBUG", "Account_ID": "test_account"}
-        ]
 
-        # Mock getQuotes to fail first with ConnectTimeout and succeed after retries
-        mock_quote_response = {
-            "AAPL": {"quote": {"lastPrice": 145.00, "askPrice": 146.00}}
-        }
+        # Mock strategies
+        mock_strategies = MagicMock()
+        mock_strategies.find.return_value = create_mock_strategies(num_positions)
+        self.api_trader.mongo.strategies = mock_strategies
+
+        # Mock quotes
+        mock_quote_response = create_mock_quotes(num_positions)
+        self.api_trader.tdameritrade.getQuotes = MagicMock(return_value=mock_quote_response) 
         
         # Raise ConnectTimeout, then ReadTimeout, then return a successful response
         self.api_trader.tdameritrade.getQuotes.side_effect = [
@@ -534,11 +582,23 @@ class TestApiTrader(unittest.TestCase):
             mock_quote_response  # Successful quote response
         ]
 
+        # Mock the return value of exit_strategy's should_exit method
+        mock_exit_response = {
+            "exit": True,
+            "take_profit_price": 160.00,
+            "stop_loss_price": 140.00,
+            "additional_params": {"ATR": 2.5, "max_price": 180.00},
+            "reason": "OCO"
+        }
+        mock_exit_strategy.return_value.should_exit.return_value = mock_exit_response
+
         # Run the method to test
         self.api_trader.checkOCOpapertriggers()
 
         # Assertions to ensure that getQuotes was called 3 times (2 failures, 1 success)
         self.assertEqual(self.api_trader.tdameritrade.getQuotes.call_count, 3)
+
+        self.api_trader.logger.error.assert_not_called()
 
         # Verify logger warning was called for both timeouts
         # Check for ConnectTimeout warning
@@ -550,10 +610,12 @@ class TestApiTrader(unittest.TestCase):
         # Instead of asserting an exact message, let's look for any retry-related info log
         assert any("Retry" in call[0][0] for call in self.api_trader.logger.info.call_args_list), "No retry log message found"
 
+        first_key = list(mock_quote_response.keys())[0]
         # Verify the successful flow after retries
-        self.assertIn("AAPL", mock_quote_response)
-        last_price = mock_quote_response["AAPL"]["quote"]["lastPrice"]
-        self.assertEqual(last_price, 145.00)
+        self.assertIn(first_key, mock_quote_response)
+        mock_exit_strategy.return_value.should_exit.assert_called()  # Validate the method was called
+        self.assertTrue(mock_exit_strategy.return_value.should_exit.called, "should_exit should have been called")
+        self.assertEqual(mock_exit_strategy.return_value.should_exit.call_count, num_positions)
 
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)
@@ -573,7 +635,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.RUN_LIVE_TRADER = True  # Mock or set RUN_LIVE_TRADER attribute
 
         # Mock open_positions
-        num_positions = 500
+        num_positions = 1000
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
         self.api_trader.mongo.open_positions = mock_open_positions
@@ -615,6 +677,7 @@ class TestApiTrader(unittest.TestCase):
 
         mock_exit_strategy.return_value.should_exit.assert_called()  # Validate the method was called
         self.assertTrue(mock_exit_strategy.return_value.should_exit.called, "should_exit should have been called")
+        self.assertEqual(mock_exit_strategy.return_value.should_exit.call_count, num_positions)
 
 
 def create_mock_open_positions(num_positions):
@@ -657,6 +720,77 @@ def create_mock_quotes(num_positions):
             }
         }
     return quotes_dict
+
+def generate_random_symbol():
+    """Generate a random stock symbol (e.g., AAPL, MSFT)."""
+    return ''.join(random.choices(string.ascii_uppercase, k=4))
+
+def generate_test_data_for_run_trader(num_positions=10):
+    """Generates dynamic mock test data for the runTrader method."""
+
+    asset_types = ["EQUITY", "OPTION"]
+    sides = ["BUY", "SELL", "SELL_TO_CLOSE", "BUY_TO_CLOSE"]  # Side values for both long and short
+    position_types = ["LONG", "SHORT"]  # Position types
+
+    open_positions = []
+    strategies = []
+    quotes = {}
+
+    for i in range(num_positions):
+        symbol = generate_random_symbol()
+        asset_type = random.choice(asset_types)
+        position_type = random.choice(position_types)
+        side = random.choice(sides)
+
+        # if asset_type == "EQUITY":
+        #     side = "SELL" if position_type == "LONG" else "BUY"  # SELL for long positions, BUY for short positions
+        # else:
+        #     side = "SELL_TO_CLOSE" if position_type == "LONG" else "BUY_TO_CLOSE"  # For options
+
+        position_qty = random.randint(1, 100)  # Random quantity, long or short
+        entry_price = round(random.uniform(100, 1000), 2)  # Random entry price
+        take_profit_percentage = round(random.uniform(0.05, 0.2), 2)  # Random take-profit %
+        stop_loss_percentage = round(random.uniform(0.02, 0.1), 2)  # Random stop-loss %
+        last_price = round(random.uniform(entry_price - 50, entry_price + 50), 2)  # Random last price
+        ask_price = round(random.uniform(last_price, last_price + 5), 2)  # Random ask price
+        high_price = round(random.uniform(ask_price, ask_price + 5), 2)  # Random ask price
+
+        # Append position data
+        open_positions.append({
+            "Symbol": symbol,
+            "Strategy": f"Strategy_{i}",
+            "Asset_Type": asset_type,
+            "Account_ID": f"test_account_{i}",
+            "Qty": position_qty,
+            "Entry_Price": entry_price,
+            "Position_Type": position_type,
+            "Side": side,
+            "Account_Position": "Live",
+        })
+
+        # Generate strategies
+        strategies.append({
+            "Strategy": f"Strategy_{i}",
+            "Account_ID": "test_account",
+            "Active": True,
+            "Position_Type": position_type,  # Valid BUY or SELL
+            "Order_Type": "OCO",
+            "ExitStrategy": "FixedPercentageExit",  # Example exit strategy
+            "take_profit_percentage": take_profit_percentage,
+            "stop_loss_percentage": stop_loss_percentage,
+        })
+
+        # Append quote data
+        quotes[symbol] = {
+            "quote": {
+                "lastPrice": last_price,
+                "askPrice": ask_price,
+                "highPrice": high_price
+            }
+        }
+
+    return open_positions, strategies, quotes
+
 
 if __name__ == '__main__':
     unittest.main()

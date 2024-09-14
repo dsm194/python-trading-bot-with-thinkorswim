@@ -25,6 +25,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         additional_params = {
             "last_price": 150.0,
             "max_price": 145.0,  # previous high price
+            "entry_price": 142.0,
             "symbol": "AAPL",
             "quantity": 10,
             "side": "BUY",
@@ -49,6 +50,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         additional_params = {
             "last_price": 130.0,  # price below the trailing stop
             "max_price": 150.0,  # previous high price
+            "entry_price": 142.0,
             "symbol": "AAPL",
             "quantity": 10,
             "side": "BUY",
@@ -189,6 +191,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         additional_params = {
             'last_price': 100,
             'max_price': 110,  # Max observed price
+            "entry_price": 105,
         }
 
         # Test that it should exit if the last_price drops below the trailing stop price
@@ -202,7 +205,8 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
     def test_should_exit_updates_max_price(self):
         additional_params = {
             'last_price': 110,
-            'max_price': 105
+            'max_price': 105,
+            "entry_price": 101,
         }
         # Test that the max price updates if the last price goes higher
         result = self.exit_strategy.should_exit(additional_params)

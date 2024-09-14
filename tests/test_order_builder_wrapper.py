@@ -245,5 +245,26 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.assertIn('childOrderStrategies', obj)
         self.assertEqual(len(obj['childOrderStrategies']), 1)
 
+    @patch('api_trader.strategies.trailing_stop_exit.TrailingStopExitStrategy')
+    def test_trailing_stop_exit_strategy_constructed(self, mock_trailing_stop_exit_strategy):
+        # Mock strategy settings for TrailingStopExitStrategy
+        mock_strategy_settings = {
+            "TrailingStopExit": {
+                "trailing_stop_percentage": 0.05
+            }
+        }
+        
+        strategy_object = {'ExitStrategy': 'TrailingStopExit', 'ExitStrategySettings': mock_strategy_settings}
+
+        # Call the method to construct the exit strategy
+        result = self.wrapper._construct_exit_strategy(strategy_object)
+
+        # Verify that TrailingStopExitStrategy was constructed and called with the right settings
+        mock_trailing_stop_exit_strategy.assert_called_once_with(mock_strategy_settings['TrailingStopExit'])
+
+        # Check that the result is an instance of the mock TrailingStopExitStrategy
+        self.assertEqual(result, mock_trailing_stop_exit_strategy.return_value)
+
+
 if __name__ == '__main__':
     unittest.main()
