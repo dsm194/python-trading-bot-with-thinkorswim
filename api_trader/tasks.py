@@ -40,8 +40,8 @@ class Tasks:
 
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.mongo.open_positions.find(
-            # {"Trader": self.user["Name"], "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
-            {"Trader": self.user["Name"], "Account_Position": "Paper"}))
+            # {"Trader": self.user["Name"], "Account_ID": self.account_id, "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
+            {"Trader": self.user["Name"], "Account_ID": self.account_id, "Account_Position": "Paper"}))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
         strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
@@ -59,9 +59,9 @@ class Tasks:
                 positions_by_symbol[symbol] = []
             positions_by_symbol[symbol].append(position)
 
-        # Process symbols in chunks of 500
+        # Process symbols in chunks of 250 (reduced batch size)
         symbols = list(positions_by_symbol.keys())
-        batch_size = 500
+        batch_size = 250
         quotes = {}
         for i in range(0, len(symbols), batch_size):
             # Batch the symbols for API call
@@ -98,10 +98,17 @@ class Tasks:
                     self.logger.error(f"An unexpected error occurred: {e}")
                     break  # If another type of exception occurs, break the loop and stop retrying
 
+            # Skip processing if quotes retrieval fails for the current batch
+            if not success:
+                continue  # Skip this batch and move on to the next one if any
+
             for symbol in batch_symbols:
                 
-                # Reset the price at the start of each loop iteration
-                price = None
+                quote = quotes.get(symbol)
+
+                if not quote or "askPrice" not in quote["quote"]:
+                    self.logger.error(f"Quote not found or invalid for symbol: {symbol}")
+                    continue
 
                 for position in positions_by_symbol[symbol]:
                     strategy_name = position["Strategy"]
@@ -113,12 +120,6 @@ class Tasks:
 
                     exit_strategy = strategy_data["ExitStrategy"]
 
-                    quote = quotes.get(symbol)
-
-                    if not quote or "askPrice" not in quote["quote"]:
-                        self.logger.error(f"Quote not found or invalid for symbol: {symbol}")
-                        continue
-
                     # Safely check if 'EQ' exists in the marketHours structure and if the market is open
                     equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours)
                     equity_data = equity_data.get('EQ', equity_data)
@@ -127,7 +128,7 @@ class Tasks:
 
                     # price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"])
                     last_price = quote["quote"]["lastPrice"]
-                    max_price = quote["quote"]["highPrice"]
+                    max_price = position.get("max_price", position["Entry_Price"])
 
                     # Prepare additional params if needed
                     additional_params = {
@@ -142,8 +143,14 @@ class Tasks:
                     exit_result = exit_strategy.should_exit(additional_params)
                     should_exit = exit_result['exit']
                     
-                    # Update the max_price in the position data
-                    position["max_price"] = exit_result["additional_params"]["max_price"]
+                    # Update max_price in MongoDB before sending any order
+                    updated_max_price = exit_result["additional_params"]["max_price"]
+                    if updated_max_price != position.get("max_price"):
+                        self.mongo.open_positions.update_one(
+                            {"_id": position["_id"]},
+                            {"$set": {"max_price": updated_max_price}}
+                        )
+                        self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
 
                     if should_exit:
                         # The exit conditions are met, so we need to close the position
@@ -265,11 +272,16 @@ class Tasks:
 
         for child in childOrderStrategies:
 
-            oco_children["childOrderStrategies"][child["orderId"]] = {
-                "Side": child["orderLegCollection"][0]["instruction"],
-                "Exit_Price": child["stopPrice"] if "stopPrice" in child else child["price"],
-                "Exit_Type": "STOP LOSS" if "stopPrice" in child else "TAKE PROFIT",
-                "Order_Status": child["status"]
+            # Use .get() to safely retrieve keys, and provide None as a default if keys are missing
+            exit_price = child.get("stopPrice", child.get("price"))
+            exit_type = "STOP LOSS" if "stopPrice" in child else "TAKE PROFIT"
+
+            # Ensure that exit_price exists, otherwise handle missing values
+            oco_children["childOrderStrategies"][child.get("Order_ID")] = {
+                "Side": child.get("orderLegCollection", [{}])[0].get("instruction"),
+                "Exit_Price": exit_price,
+                "Exit_Type": exit_type if exit_price is not None else None,
+                "Order_Status": child.get("status")
             }
 
         return oco_children

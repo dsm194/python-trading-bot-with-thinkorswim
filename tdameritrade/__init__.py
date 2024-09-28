@@ -100,57 +100,6 @@ class TDAmeritrade:
 
         return True
 
-    @exception_handler
-    def sendRequest(self, url, method="GET", data=None):
-        """ METHOD SENDS ALL REQUESTS FOR METHODS BELOW.
-
-        Args:
-            url ([str]): URL for the particular API
-            method (str, optional): GET, POST, PUT, DELETE. Defaults to "GET".
-            data ([dict], optional): ONLY IF POST REQUEST. Defaults to None.
-
-        Returns:
-            [json]: RESPONSE DATA
-        """
-
-        isValid = self.checkTokenValidity()
-
-        if isValid:
-
-            if method == "GET":
-
-                resp = requests.get(url, headers=self.header)
-
-                return resp.json()
-
-            elif method == "POST":
-
-                resp = requests.post(url, headers=self.header, json=data)
-
-                return resp
-
-            elif method == "PATCH":
-
-                resp = requests.patch(url, headers=self.header, json=data)
-
-                return resp
-
-            elif method == "PUT":
-
-                resp = requests.put(url, headers=self.header, json=data)
-
-                return resp
-
-            elif method == "DELETE":
-
-                resp = requests.delete(url, headers=self.header)
-
-                return resp
-
-        else:
-
-            return
-
     def getAccount(self):
         """ METHOD GET ACCOUNT DATA
 
@@ -212,7 +161,7 @@ class TDAmeritrade:
         main_order_id = Utils(client=self.client, account_hash=account_hash).extract_order_id(resp)
 
         if not main_order_id:
-            return None
+            return {"Order_ID": None}  # Return basic info if no order ID is available
 
         detailed_resp = self.getSpecificOrder(main_order_id)
 
@@ -222,6 +171,7 @@ class TDAmeritrade:
             return detailed_resp  # Return the full order details as a dictionary
         else:
             return {"Order_ID": main_order_id}  # Return basic info if full details are unavailable
+
 
     def rename_order_ids(self, order_data):
         """Recursively rename 'orderId' to 'Order_ID' in the order structure.
@@ -280,10 +230,23 @@ class TDAmeritrade:
             isValid = False
 
         if isValid:
-            if "/" in symbol:
-                return self.client.get_quotes(symbol).json()
-            else:
-                return self.client.get_quote(symbol).json()
+            try:
+                if "/" in symbol:
+                    response = self.client.get_quotes(symbol)
+                else:
+                    response = self.client.get_quote(symbol)
+
+                # Check if the response status is not 200
+                if response.status_code != 200:
+                    self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code}")
+                    return None
+                
+                # Parse the JSON only if it's a successful response
+                return response.json()
+                
+            except Exception as e:
+                self.logger.error(f"An error occurred while retrieving the quote for symbol: {symbol}. Error: {e}")
+                return None
         else:
             return
 
@@ -308,7 +271,20 @@ class TDAmeritrade:
         isValid = self.checkTokenValidity()
 
         if isValid:
-            return self.client.get_quotes(symbols).json()
+            try:
+                response = self.client.get_quotes(symbols)
+
+                # Check if the response status is not 200
+                if response.status_code != 200:
+                    self.logger.error(f"Failed to retrieve quote for symbols: {symbols}. HTTP Status: {response.status_code}")
+                    return None
+                
+                # Parse the JSON only if it's a successful response
+                return response.json()
+                
+            except Exception as e:
+                self.logger.error(f"An error occurred while retrieving the quote for symbols: {symbols}. Error: {e}")
+                return None
         else:
             return
 
@@ -322,9 +298,17 @@ class TDAmeritrade:
             [json]: ORDER DATA
         """
 
-        # url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
+        # Try to convert the order ID to an integer for the comparison
+        try:
+            numeric_id = int(id)
+        except (ValueError, TypeError):
+            numeric_id = None
 
-        # return self.sendRequest(url)
+        # If the order ID is an integer and less than 0, assume it's a paper trade
+        if numeric_id is not None and numeric_id < 0:
+            self.logger.info(f"Order ID {id} is a paper trade, no need to check status.")
+            return {'message': 'Order not found'}
+
 
         isValid = self.checkTokenValidity()
 
@@ -340,7 +324,21 @@ class TDAmeritrade:
                 #    }
                 #]
                 account_hash = resp.json()[0]['hashValue']
-                return self.client.get_order(id, account_hash).json()
+            
+                try:
+                    response = self.client.get_order(id, account_hash)
+
+                    # Check if the response status is not 200
+                    if response.status_code != 200:
+                        self.logger.warning(f"Failed to get specific order: {id}. HTTP Status: {response.status_code}")
+                        # return None
+                    
+                    # Parse the JSON only if it's a successful response
+                    return response.json()
+                    
+                except Exception as e:
+                    self.logger.error(f"An error occurred while attempting to get specific order: {id}. Error: {e}")
+                    return
             else:
                 return
         else:
@@ -374,7 +372,21 @@ class TDAmeritrade:
                 #    }
                 #]
                 account_hash = resp.json()[0]['hashValue']
-                return self.client.cancel_order(id, account_hash).json()
+            
+                try:
+                    response = self.client.cancel_order(id, account_hash)
+
+                    # Check if the response status is not 200
+                    if response.status_code != 200:
+                        self.logger.error(f"Failed to cancel order: {id}. HTTP Status: {response.status_code}")
+                        return None
+                    
+                    # Parse the JSON only if it's a successful response
+                    return response.json()
+                    
+                except Exception as e:
+                    self.logger.error(f"An error occurred while attempting to cancel order: {id}. Error: {e}")
+                    return None
             else:
                 return
         else:
@@ -384,11 +396,23 @@ class TDAmeritrade:
         isValid = self.checkTokenValidity()
 
         if isValid:
+            try:
+                # If no market is provided, get all the enum values as a list
+                if markets is None:
+                    markets = [market for market in schwabBaseClient.MarketHours.Market]
+                    
+                response = self.client.get_market_hours(markets=markets, date=date)
 
-            # If no market is provided, get all the enum values as a list
-            if markets is None:
-                markets = [market for market in schwabBaseClient.MarketHours.Market]
-
-            return self.client.get_market_hours(markets=markets, date=date).json()
+                # Check if the response status is not 200
+                if response.status_code != 200:
+                    self.logger.error(f"Failed to retrieve market hours for markets: {markets}. HTTP Status: {response.status_code}")
+                    return None
+                
+                # Parse the JSON only if it's a successful response
+                return response.json()
+                
+            except Exception as e:
+                self.logger.error(f"An error occurred while retrieving market hours for markets: {markets}. Error: {e}")
+                return None
         else:
             return

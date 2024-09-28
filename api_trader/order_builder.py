@@ -31,10 +31,61 @@ class AssetType:
 
 class OrderBuilderWrapper:
 
-    def __init__(self):
+    def __init__(self, mongo=None):
         self.strategy_cache = {}
+        """
+        Initialize with an optional mongo for fetching open_positions.
+        """
+        self.mongo = mongo
 
+
+    def get_open_positions(self, user, account_id, strategy):
+        """
+        Fetch open positions from the database for the given user, account ID, and strategy.
+        """
+        if self.mongo:
+            return list(self.mongo.open_positions.find({
+                "Trader": user["Name"],
+                "Account_ID": account_id,
+                "Strategy": strategy
+            }))
+        else:
+            raise ValueError("MongoDB reference is not provided.")
     
+
+    def get_queued_positions(self, user, account_id, strategy):
+        """
+        Fetch queued positions from the database for the given user, account ID, and strategy.
+        """
+        if self.mongo:
+            return list(self.mongo.queue.find({
+                "Trader": user["Name"],
+                "Account_ID": account_id,
+                "Strategy": strategy,
+                "Order_Status": "QUEUED",  # Assuming 'QUEUED' indicates pending orders
+                "Direction": "OPEN POSITION"
+            }))
+        else:
+            raise ValueError("MongoDB reference is not provided.")
+        
+
+    def get_current_strategy_allocation(self, strategy, user, account_id):
+        """
+        Fetch the current allocation for a given strategy. If open_positions are not provided,
+        use the internal mongo reference to fetch them.
+        """
+        open_positions = self.get_open_positions(user, account_id, strategy)
+        outstanding_orders = self.get_queued_positions(user, account_id, strategy)
+
+        # Calculate total allocation from open positions
+        allocation = sum(position["Qty"] * position["Entry_Price"] for position in open_positions)
+        
+        # Add allocation from outstanding orders in the queue
+        allocation += sum(order["Qty"] * order["Entry_Price"] for order in outstanding_orders)
+        
+        return allocation
+    
+        
     def load_default_settings(self, strategy_type):
         # Load the default settings for the given strategy type from the config file
         return default_strategy_settings.get(strategy_type, {})
@@ -91,9 +142,7 @@ class OrderBuilderWrapper:
         # Add other strategy types as needed
 
 
-
-
-    def standardOrder(self, trade_data, strategy_object, direction, OCOorder=False):
+    def standardOrder(self, trade_data, strategy_object, direction, user, account_id, OCOorder=False):
 
         order = None
         symbol = trade_data["Symbol"]
@@ -132,6 +181,10 @@ class OrderBuilderWrapper:
 
        # GET QUOTE FOR SYMBOL
         resp = self.tdameritrade.getQuote(symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"])
+        
+        # if we didn't find the symbol, exit - we can't create the order
+        if resp is None:
+            return None, None
 
         price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][BUY_PRICE]) if side in ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"] else float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
 
@@ -152,16 +205,18 @@ class OrderBuilderWrapper:
             position_size = int(strategy_object["Position_Size"])
             shares = int(position_size / price) if asset_type == AssetType.EQUITY else int((position_size / 100) / price)
 
-            # # Verify that position_size is less than 25% of available buying power
-            # buying_power = self.tdameritrade.getBuyingPower()
-            
-            # if buying_power is None or position_size >= 0.25 * buying_power:
-            #     self.logger.warning(
-            #         f"Order stopped: {side} order for {symbol} not placed. "
-            #         f"Required position size ${position_size} exceeds 25% of available buying power (${0.25 * buying_power}). "
-            #         f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Available buying power: ${buying_power}"
-            #     )
-            #     return None, None
+            max_position_size = strategy_object.get("MaxPositionSize", None)
+            if max_position_size:
+                current_allocated = self.get_current_strategy_allocation(strategy, user=user, account_id=account_id)
+                new_allocation = shares * price
+                
+                if current_allocated + new_allocation > float(max_position_size):
+                    self.logger.warning(
+                        f"Order stopped: {side} order for {symbol} not placed. "
+                        f"Required position size ${current_allocated + new_allocation} exceeds max position size for this strategy. "
+                        f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Max position size: ${max_position_size}"
+                    )
+                    return None, None
 
             if strategy_object["Active"] and shares > 0:
                 if asset_type == AssetType.EQUITY:
@@ -174,6 +229,7 @@ class OrderBuilderWrapper:
                     "Position_Size": position_size,
                     "Entry_Price": price,
                     "Last_Price": price,
+                    "Max_Price": price,
                     "Entry_Date": getDatetime(),
                 })
             else:
@@ -201,26 +257,23 @@ class OrderBuilderWrapper:
 
         return order, obj
 
-    def OCOorder(self, trade_data, strategy_object, direction):
+    def OCOorder(self, trade_data, strategy_object, direction, user, account_id):
 
         # Load the strategy using the new load_strategy method
         strategy = self.load_strategy(strategy_object)
 
         # Call standardOrder to get parent_order and obj
-        order, obj = self.standardOrder(trade_data, strategy_object, direction, OCOorder=True)
+        order, obj = self.standardOrder(trade_data, strategy_object, direction, user, account_id, OCOorder=True)
 
         # Check if parent_order is None
-        if order is None:
-            self.logger.error("Parent order is None. Cannot proceed with the trade.")
-            return None, None  # Handle the situation as needed
+        if order is not None:
+            if direction == "OPEN POSITION":
+                exit_order = strategy.apply_exit_strategy(obj)
 
-        if direction == "OPEN POSITION":
-            exit_order = strategy.apply_exit_strategy(obj)
+                order = first_triggers_second(order, exit_order)
 
-            order = first_triggers_second(order, exit_order)
-
-            obj["childOrderStrategies"] = [exit_order]
-        else:
-            obj["childOrderStrategies"] = trade_data["childOrderStrategies"]
+                obj["childOrderStrategies"] = [exit_order]
+            else:
+                obj["childOrderStrategies"] = trade_data["childOrderStrategies"]
 
         return order, obj

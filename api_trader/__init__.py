@@ -36,8 +36,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
         
         try:
-            # Call the __init__ method of both Tasks and OrderBuilderWrapper
-            super().__init__()
+
             self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
 
             # Instance variables
@@ -60,7 +59,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.no_ids_list = []
 
             # Initialize parent classes
-            OrderBuilderWrapper.__init__(self)
+            OrderBuilderWrapper.__init__(self, self.mongo)
             Tasks.__init__(self)
 
             # Path to the stop signal file
@@ -110,11 +109,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         if order_type == "STANDARD":
 
             order, obj = self.standardOrder(
-                trade_data, strategy_object, direction)
+                trade_data, strategy_object, direction, self.user, self.account_id)
 
         elif order_type == "OCO":
 
-            order, obj = self.OCOorder(trade_data, strategy_object, direction)
+            order, obj = self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id)
 
         if order == None and obj == None:
 
@@ -125,7 +124,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             order_details = self.tdameritrade.placeTDAOrder(order)
 
-            if not order_details or "orderId" not in order_details:
+            if not order_details or "Order_ID" not in order_details:
                 # Handle the case where order placement failed
                 error_message = (order_details.json()).get("error", "Unknown error")
                 other = {
