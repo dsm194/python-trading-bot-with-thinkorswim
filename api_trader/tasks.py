@@ -172,7 +172,7 @@ class Tasks:
 
         # Fetch open OCO positions
         open_positions = self.open_positions.find(
-            {"Trader": self.user["Name"], "Order_Type": "OCO"}
+            {"Trader": self.user["Name"], "Account_ID": self.account_id, "Order_Type": "OCO"}
         )
 
         bulk_updates = []
@@ -239,7 +239,7 @@ class Tasks:
                         if updates:
                             bulk_updates.append(
                                 UpdateOne(
-                                    {"Trader": self.user["Name"], "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
+                                    {"Trader": self.user["Name"], "Account_ID": self.account_id, "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
                                     {"$set": updates}
                                 )
                             )

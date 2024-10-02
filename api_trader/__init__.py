@@ -170,7 +170,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
         # ADD TO QUEUE WITHOUT ORDER ID AND STATUS
         self.queue.update_one(
-            {"Trader": self.user["Name"], "Symbol": order["Symbol"], "Strategy": order["Strategy"]}, {"$set": order}, upsert=True)
+            {"Trader": self.user["Name"], "Account_ID": order["Account_ID"], "Symbol": order["Symbol"], "Strategy": order["Strategy"]}, {"$set": order}, upsert=True)
 
     # STEP THREE
     @exception_handler
@@ -264,8 +264,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
                 else:
 
-                    self.queue.update_one({"Trader": self.user["Name"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"]}, {
-                        "$set": {"Order_Status": new_status}})
+                    self.queue.update_one({"Trader": self.user["Name"], "Account_ID": queue_order["Account_ID"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"]},
+                                          {"$set": {"Order_Status": new_status}})
 
     # STEP FOUR
     @exception_handler
@@ -345,17 +345,19 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 })
 
                 # Check if the position is already in closed_positions
-                already_closed = self.closed_positions.count_documents(
-                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, 
+                already_closed = self.closed_positions.count_documents({
+                    "Trader": self.user["Name"], "Account_ID": account_id,
+                    "Symbol": symbol, "Strategy": strategy, 
                     "Entry_Date": position["Entry_Date"], "Entry_Price": position["Entry_Price"],
-                    "Exit_Price": price, "Qty": position["Qty"],})
+                    "Exit_Price": price, "Qty": position["Qty"]
+                })
 
                 if already_closed == 0:
                     collection_insert = self.closed_positions.insert_one
                     message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
 
                 is_removed = self.open_positions.delete_one(
-                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy})
+                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy})
 
                 if is_removed.deleted_count == 0:
                     self.logger.error(f"Failed to delete open position for {symbol}")
@@ -377,7 +379,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         # Remove from Queue
         self.queue.delete_one(
-            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": self.account_id})
+            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id})
 
         self.push.send(message_to_push)
 

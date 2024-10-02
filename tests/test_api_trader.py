@@ -240,7 +240,8 @@ class TestApiTrader(unittest.TestCase):
         order = {
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
-            "Quantity": 10
+            "Quantity": 10,
+            "Account_ID": "12345"
         }
 
         # Call the queueOrder method
@@ -248,7 +249,7 @@ class TestApiTrader(unittest.TestCase):
 
         # Verify that the queue.update_one was called with the correct arguments
         self.mongo.queue.update_one.assert_called_once_with(
-            {"Trader": "TestUser", "Symbol": "AAPL", "Strategy": "TestStrategy"},
+            {"Trader": "TestUser", "Symbol": "AAPL", "Strategy": "TestStrategy", "Account_ID": "12345"},
             {"$set": order},
             upsert=True
         )
@@ -392,7 +393,7 @@ class TestApiTrader(unittest.TestCase):
     def test_update_status_else_branch(self, mock_pushOrder):
         # Mock the queued order
         self.mongo.return_value.__getitem__.return_value.find.return_value = [
-            {"Order_ID": "12345", "Symbol": "SYM0", "Order_Type": "OCO", "Qty": 10, "Strategy": "STRATEGY_0", "Entry_Price": 100.0}
+            {"Order_ID": "12345", "Symbol": "SYM0", "Order_Type": "OCO", "Qty": 10, "Strategy": "STRATEGY_0", "Entry_Price": 100.0, "Account_ID": "12345"}
         ]
 
         # Mock the specific order response with a non-matching status
@@ -421,7 +422,8 @@ class TestApiTrader(unittest.TestCase):
         expected_filter = {
             "Trader": self.api_trader.user["Name"],
             "Symbol": "SYM0",
-            "Strategy": "STRATEGY_0"
+            "Strategy": "STRATEGY_0",
+            "Account_ID": "12345"
         }
         expected_update = {
             "$set": {"Order_Status": "PENDING"}
@@ -465,7 +467,7 @@ class TestApiTrader(unittest.TestCase):
             "Trader": "TestUser",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
-            "Account_ID": "12345"
+            "Account_ID": "123"
         })
         self.push.send.assert_called_once_with(
             ">>>> \n Side: BUY \n Symbol: AAPL \n Qty: 10 \n Price: $150.0 \n Strategy: TestStrategy \n Trader: TestUser"
@@ -538,6 +540,7 @@ class TestApiTrader(unittest.TestCase):
         # Verify that open_positions entry was removed
         self.mongo.open_positions.delete_one.assert_called_once_with({
             "Trader": "TestUser",
+            "Account_ID": "123",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy"
         })
@@ -547,7 +550,7 @@ class TestApiTrader(unittest.TestCase):
             "Trader": "TestUser",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
-            "Account_ID": "12345"
+            "Account_ID": "123"
         })
 
         # Verify that push.send was called with the expected message
@@ -586,7 +589,7 @@ class TestApiTrader(unittest.TestCase):
             "Trader": "TestUser",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
-            "Account_ID": "12345"
+            "Account_ID": "123"
         })
         # self.push.send.assert_called_once_with(
         #     ">>>> \n Side: BUY \n Symbol: AAPL \n Qty: 10 \n Price: $150.0 \n Strategy: TestStrategy \n Trader: TestUser"
@@ -1020,7 +1023,7 @@ class TestApiTrader(unittest.TestCase):
         # Verify that MongoDB updates were correctly prepared
         self.api_trader.open_positions.bulk_write.assert_called_once_with([
             UpdateOne(
-                {"Trader": self.api_trader.user["Name"], "Symbol": "SYM4", "Strategy": "STRATEGY_D"},
+                {"Trader": self.api_trader.user["Name"], "Account_ID": self.api_trader.account_id, "Symbol": "SYM4", "Strategy": "STRATEGY_D"},
                 {"$set": {"childOrderStrategies.order4.Order_Status": "WORKING"}}
             )
         ])
