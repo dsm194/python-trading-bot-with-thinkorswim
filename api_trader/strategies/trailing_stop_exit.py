@@ -44,12 +44,13 @@ class TrailingStopExitStrategy(ExitStrategy):
         # trailing_stop_price = exit_result['trailing_stop_price']
         additional_params = exit_result['additional_params']  # Access additional_params
         symbol = additional_params['symbol']
+        pre_symbol = additional_params.get('pre_symbol')
         qty = additional_params['quantity']
         side = additional_params['side']
         assetType = additional_params['assetType']
 
         # Determine the instruction (inverse of the side)
-        instruction = self.get_instruction_for_side(side=side)
+        instruction = self.get_instruction_for_side(assetType, side)
 
         # Create trailing stop order
         trailing_stop_order_builder = self.order_builder_cls()
@@ -64,7 +65,7 @@ class TrailingStopExitStrategy(ExitStrategy):
         if assetType == AssetType.EQUITY:
             trailing_stop_order_builder.add_equity_leg(instruction=instruction, symbol=symbol, quantity=qty)
         else:
-            trailing_stop_order_builder.add_option_leg(instruction=instruction, symbol=symbol, quantity=qty)
+            trailing_stop_order_builder.add_option_leg(instruction=instruction, symbol=pre_symbol, quantity=qty)
 
         # Return the built trailing stop order
         return trailing_stop_order_builder.build()

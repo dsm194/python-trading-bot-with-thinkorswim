@@ -24,6 +24,7 @@ class ExitStrategy(ABC):
             "entry_price": float(trade_data["Entry_Price"]),
             "quantity": trade_data["Qty"],
             "symbol": trade_data["Symbol"],
+            "pre_symbol": trade_data.get("Pre_Symbol"),
             "side": trade_data["Side"],
             "assetType": trade_data["Asset_Type"],
         }
@@ -45,14 +46,30 @@ class ExitStrategy(ABC):
         """
         raise NotImplementedError("Subclasses should implement this method.")
 
-    def get_instruction_for_side(self, side):
-        from schwab.orders.common import EquityInstruction
-        return {
+    def get_instruction_for_side(self, assetType, side):
+        from api_trader.order_builder import AssetType
+        from schwab.orders.common import EquityInstruction, OptionInstruction
+
+        equity_instructions = {
             "BUY_TO_OPEN": EquityInstruction.SELL,
             "BUY": EquityInstruction.SELL,
             "SELL": EquityInstruction.BUY,
             "SELL_TO_OPEN": EquityInstruction.BUY,
             "BUY_TO_COVER": EquityInstruction.SELL_SHORT,
             "SELL_SHORT": EquityInstruction.BUY_TO_COVER
-        }[side]
+        }
+
+        option_instructions = {
+            "BUY_TO_OPEN": OptionInstruction.SELL_TO_CLOSE,
+            "BUY": OptionInstruction.SELL_TO_CLOSE,
+            "SELL_TO_OPEN": OptionInstruction.BUY_TO_CLOSE,
+            "SELL": OptionInstruction.BUY_TO_OPEN,
+            "BUY_TO_CLOSE": OptionInstruction.SELL_TO_OPEN,
+            "SELL_TO_CLOSE": OptionInstruction.BUY_TO_OPEN
+        }
+
+        if assetType == AssetType.OPTION:
+            return option_instructions.get(side)
+        else:
+            return equity_instructions.get(side)
 

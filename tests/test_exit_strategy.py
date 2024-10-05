@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
+from api_trader.order_builder import AssetType
 from api_trader.strategies.exit_strategy import ExitStrategy
 from api_trader.strategies.strategy_settings import StrategySettings
 
@@ -45,6 +46,7 @@ class TestExitStrategy(unittest.TestCase):
             "entry_price": 145.0,
             "quantity": 10,
             "symbol": "AAPL",
+            "pre_symbol": None,
             "side": "BUY",
             "assetType": "EQUITY"
         })
@@ -100,18 +102,33 @@ class TestExitStrategy(unittest.TestCase):
         self.assertEqual(result, "MockOrder")
 
     @patch('schwab.orders.common.EquityInstruction')
-    def test_get_instruction_for_side(self, mock_EquityInstruction):
+    @patch('schwab.orders.common.OptionInstruction')
+    def test_get_instruction_for_side(self, mock_OptionInstruction, mock_EquityInstruction):
         # Mock EquityInstruction constants
         mock_EquityInstruction.SELL = "SELL"
         mock_EquityInstruction.BUY = "BUY"
         mock_EquityInstruction.SELL_SHORT = "SELL_SHORT"
         mock_EquityInstruction.BUY_TO_COVER = "BUY_TO_COVER"
 
+        mock_OptionInstruction.SELL_TO_CLOSE = "SELL_TO_CLOSE"
+        mock_OptionInstruction.BUY_TO_CLOSE = "BUY_TO_CLOSE"
+        mock_OptionInstruction.BUY_TO_OPEN = "BUY_TO_OPEN"
+        mock_OptionInstruction.SELL_TO_OPEN = "SELL_TO_OPEN"
+
         # Test the get_instruction_for_side method with different sides
-        self.assertEqual(self.exit_strategy.get_instruction_for_side("BUY"), "SELL")
-        self.assertEqual(self.exit_strategy.get_instruction_for_side("SELL"), "BUY")
-        self.assertEqual(self.exit_strategy.get_instruction_for_side("BUY_TO_COVER"), "SELL_SHORT")
-        self.assertEqual(self.exit_strategy.get_instruction_for_side("SELL_SHORT"), "BUY_TO_COVER")
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "BUY"), mock_EquityInstruction.SELL)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "SELL"), mock_EquityInstruction.BUY)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "BUY_TO_COVER"), mock_EquityInstruction.SELL_SHORT)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "SELL_TO_OPEN"), mock_EquityInstruction.BUY)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "BUY_TO_OPEN"), mock_EquityInstruction.SELL)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.EQUITY, "SELL_SHORT"), mock_EquityInstruction.BUY_TO_COVER)
+
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "BUY_TO_OPEN"), mock_OptionInstruction.SELL_TO_CLOSE)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "BUY"), mock_OptionInstruction.SELL_TO_CLOSE)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "SELL_TO_OPEN"), mock_OptionInstruction.BUY_TO_CLOSE)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "SELL"), mock_OptionInstruction.BUY_TO_OPEN)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "BUY_TO_CLOSE"), mock_OptionInstruction.SELL_TO_OPEN)
+        self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "SELL_TO_CLOSE"), mock_OptionInstruction.BUY_TO_OPEN)
 
 
 if __name__ == '__main__':

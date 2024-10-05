@@ -39,6 +39,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
         stop_loss_price = exit_result['stop_loss_price']
         additional_params = exit_result['additional_params']
         symbol = additional_params['symbol']
+        pre_symbol = additional_params.get('pre_symbol')
         qty = additional_params['quantity']
         side = additional_params['side']
         assetType = additional_params['assetType']
@@ -48,7 +49,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
         stop_loss_price = round(stop_loss_price, 2) if stop_loss_price >= 1 else round(stop_loss_price, 4)
 
         # Determine the instruction (inverse of the side)
-        instruction = self.get_instruction_for_side(side=side)
+        instruction = self.get_instruction_for_side(assetType, side)
 
         # Create take profit order
         take_profit_order_builder = self.order_builder_cls()
@@ -61,7 +62,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
         if assetType == AssetType.EQUITY:
             take_profit_order_builder.add_equity_leg(instruction=instruction, symbol=symbol, quantity=qty)
         else:
-            take_profit_order_builder.add_option_leg(instruction=instruction, symbol=symbol, quantity=qty)
+            take_profit_order_builder.add_option_leg(instruction=instruction, symbol=pre_symbol, quantity=qty)
 
         # Create stop loss order
         stop_loss_order_builder = self.order_builder_cls()
@@ -74,7 +75,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
         if assetType == AssetType.EQUITY:
             stop_loss_order_builder.add_equity_leg(instruction=instruction, symbol=symbol, quantity=qty)
         else:
-            stop_loss_order_builder.add_option_leg(instruction=instruction, symbol=symbol, quantity=qty)
+            stop_loss_order_builder.add_option_leg(instruction=instruction, symbol=pre_symbol, quantity=qty)
 
         # Return the OCO order
         return one_cancels_other(take_profit_order_builder.build(), stop_loss_order_builder.build()).build()

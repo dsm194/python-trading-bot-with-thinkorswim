@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
 from api_trader.strategies.strategy_settings import StrategySettings
-from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, StopPriceLinkType, StopPriceLinkBasis, EquityInstruction
+from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, StopPriceLinkType, StopPriceLinkBasis, EquityInstruction, OptionInstruction
 
 # A concrete subclass for testing purposes (since ExitStrategy is abstract)
 class TestTrailingStopExitStrategy(unittest.TestCase):
@@ -127,6 +127,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
             "trailing_stop_price": 135.0,
             "additional_params": {
                 "symbol": "AAPL",
+                "pre_symbol": ".AAPL241101C225",
                 "quantity": 10,
                 "side": "BUY",
                 "assetType": "OPTION"  # Non-equity asset
@@ -134,7 +135,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Mock the instruction for the side
-        self.exit_strategy.get_instruction_for_side = MagicMock(return_value=EquityInstruction.SELL)
+        self.exit_strategy.get_instruction_for_side = MagicMock(return_value=OptionInstruction.SELL_TO_CLOSE)
 
         # Mock the build method's return value
         self.order_builder_instance.build.return_value = {
@@ -144,7 +145,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
             'stopPriceLinkBasis': 'MARK',
             'stopPriceLinkType': 'PERCENT',
             'stopPriceOffset': 10.0,
-            'orderLegCollection': [{'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}],
+            'orderLegCollection': [{'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}],
             'orderStrategyType': 'SINGLE'
         }
 
@@ -165,7 +166,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
 
         # Check that the option leg is added instead of the equity leg
         self.order_builder_instance.add_option_leg.assert_called_once_with(
-            instruction=EquityInstruction.SELL, symbol="AAPL", quantity=10
+            instruction=OptionInstruction.SELL_TO_CLOSE, symbol=".AAPL241101C225", quantity=10
         )
 
         # Verify the build method was called
@@ -179,7 +180,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
             'stopPriceLinkBasis': 'MARK',
             'stopPriceLinkType': 'PERCENT',
             'stopPriceOffset': 10.0,
-            'orderLegCollection': [{'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}],
+            'orderLegCollection': [{'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}],
             'orderStrategyType': 'SINGLE'
         }
 

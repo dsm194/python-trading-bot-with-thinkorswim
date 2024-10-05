@@ -160,6 +160,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
             "stop_loss_price": 95.0,
             "additional_params": {
                 "symbol": "AAPL",
+                "pre_symbol": ".AAPL241101C225",
                 "quantity": 10,
                 "side": "SELL",
                 "assetType": "OPTION"  # Option asset
@@ -176,7 +177,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
                 'duration': 'GOOD_TILL_CANCEL',
                 'orderType': 'LIMIT',
                 'price': '110.0',
-                'orderLegCollection': [{'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}],
+                'orderLegCollection': [{'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}],
                 'orderStrategyType': 'SINGLE'
             },
             {
@@ -184,7 +185,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
                 'duration': 'GOOD_TILL_CANCEL',
                 'orderType': 'STOP',
                 'stopPrice': '95.0',
-                'orderLegCollection': [{'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}],
+                'orderLegCollection': [{'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}],
                 'orderStrategyType': 'SINGLE'
             }
         ]
@@ -195,8 +196,8 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
             'duration': 'GOOD_TILL_CANCEL',
             'orderType': 'OCO',
             'orderLegCollection': [
-                {'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10},
-                {'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}
+                {'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10},
+                {'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}
             ],
             'orderStrategyType': 'OCO'
         }
@@ -217,7 +218,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
 
         # Check that the option leg is added
         self.mock_order_builder_instance.add_option_leg.assert_called_with(
-            instruction='SELL', symbol='AAPL', quantity=10
+            instruction='SELL', symbol='.AAPL241101C225', quantity=10
         )
 
         # Verify the build method was called
@@ -229,8 +230,8 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
             'duration': 'GOOD_TILL_CANCEL',
             'orderType': 'OCO',
             'orderLegCollection': [
-                {'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10},
-                {'instruction': 'SELL', 'symbol': 'AAPL', 'quantity': 10}
+                {'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10},
+                {'instruction': 'SELL', 'symbol': '.AAPL241101C225', 'quantity': 10}
             ],
             'orderStrategyType': 'OCO'
         }
