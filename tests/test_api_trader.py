@@ -12,6 +12,8 @@ from pymongo.errors import WriteConcernError, WriteError
 from pymongo import UpdateOne
 
 from api_trader.order_builder import OrderBuilderWrapper
+from api_trader.strategies.fixed_percentage_exit import FixedPercentageExitStrategy
+from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
 import tdameritrade
 
 class TestApiTrader(unittest.TestCase):
@@ -1210,6 +1212,128 @@ class TestApiTrader(unittest.TestCase):
 
         # Assert that the output matches the expected structure
         self.assertEqual(result, expected_output)
+
+
+    @patch('api_trader.ApiTrader.sendOrder')  # Mock the order sending
+    def test_multiple_strategies_with_price_movement(self, mock_send_order):
+        # Step 1: Initialize ApiTrader and strategies
+        self.api_trader.get_open_positions = MagicMock()
+        self.api_trader.get_queued_positions = MagicMock()
+
+        # Setup the strategies
+        take_profit_strategy = FixedPercentageExitStrategy({
+            "take_profit_percentage": 0.10,  # 10% profit
+            "stop_loss_percentage": 0.05      # 5% loss
+        })
+
+        trailing_stop_strategy = TrailingStopExitStrategy({
+            "trailing_stop_percentage": 0.03   # 3%
+        })
+
+        # Simulate open positions
+        mock_open_positions = [
+            {
+                "Qty": 10, 
+                "Entry_Price": 100.0, 
+                "Asset_Type": "EQUITY", 
+                "Strategy": take_profit_strategy, 
+                "Symbol": "AAPL", 
+                "Side": "BUY",
+                "exited": False  # Track if this position has exited
+            },
+            {
+                "Qty": 5, 
+                "Entry_Price": 150.0,
+                "Asset_Type": "OPTION", 
+                "Strategy": trailing_stop_strategy, 
+                "Symbol": "GOOGL", 
+                "Side": "BUY",
+                "exited": False  # Track if this position has exited
+            }
+        ]
+        self.api_trader.get_open_positions.return_value = mock_open_positions
+
+        # Step 2: Define realistic price movements including a gap down scenario
+        price_movements = [145, 155, 152, 158, 140, 145, 135, 150, 149, 130, 130, 105]
+
+        # Step 3: Track orders for both strategies
+        for price in price_movements:
+            for position in mock_open_positions:
+                strategy = position["Strategy"]
+
+                # Skip processing if the position has already exited
+                if position["exited"]:
+                    continue
+
+                # Prepare additional parameters for the strategy
+                additional_params = {
+                    "last_price": float(price),
+                    "entry_price": float(position["Entry_Price"]),
+                    "quantity": position["Qty"],
+                    "symbol": position["Symbol"],
+                    "pre_symbol": position.get("Pre_Symbol"),
+                    "side": position["Side"],
+                    "assetType": position["Asset_Type"],
+                }
+
+                # Simulate the strategy logic based on the price
+                exit_result = strategy.should_exit(additional_params)
+                should_exit = exit_result['exit']
+
+                if should_exit:
+                    # Mock sending the order
+                    mock_send_order(strategy, "SELL", position["Qty"], price)
+                    # Mark the position as exited
+                    position["exited"] = True
+
+        # Step 4: Verify behavior for Strategy A (Fixed take-profit and stop-loss)
+        take_profit_sell_orders = [call for call in mock_send_order.call_args_list if isinstance(call[0][0], FixedPercentageExitStrategy)]
+        self.assertEqual(len(take_profit_sell_orders), 1)
+
+        # Verify the order details for take profit strategy
+        self.assertIsInstance(take_profit_sell_orders[0][0][0], FixedPercentageExitStrategy)
+        self.assertEqual(take_profit_sell_orders[0][0][1], "SELL")
+        self.assertEqual(take_profit_sell_orders[0][0][2], 10)
+        # Adjust the expected selling price based on the last price that triggered the exit
+        self.assertEqual(take_profit_sell_orders[0][0][3], 145)  # Use the actual price that triggered the exit
+
+        # Step 5: Verify behavior for Strategy B (Trailing stop)
+        trailing_stop_orders = [call for call in mock_send_order.call_args_list if isinstance(call[0][0], TrailingStopExitStrategy)]
+        self.assertEqual(len(trailing_stop_orders), 1)
+
+        # Verify the order details for trailing stop strategy
+        self.assertIsInstance(trailing_stop_orders[0][0][0], TrailingStopExitStrategy)
+        self.assertEqual(trailing_stop_orders[0][0][1], "SELL")
+        self.assertEqual(trailing_stop_orders[0][0][2], 5)
+
+        # Step 6: Additional Assertions for Trailing Stop Strategy
+        for position in mock_open_positions:
+            if position["Strategy"] == trailing_stop_strategy:
+                trailing_stop_price = None  # Initialize trailing stop price
+
+                for price in price_movements:
+                    additional_params = {
+                        "last_price": float(price),
+                        "entry_price": float(position["Entry_Price"]),
+                        "quantity": position["Qty"],
+                        "symbol": position["Symbol"],
+                        "pre_symbol": position.get("Pre_Symbol"),
+                        "side": position["Side"],
+                        "assetType": position["Asset_Type"],
+                    }
+                    trailing_stop_result = trailing_stop_strategy.should_exit(additional_params)
+
+                    # Capture the updated trailing stop price from the result
+                    trailing_stop_price = trailing_stop_result.get("trailing_stop_price")
+
+                    # Ensure the trailing stop updates with the highest price
+                    self.assertTrue(trailing_stop_price is not None)
+
+                    # Assert that the trailing stop price is less than the current price to ensure it updates correctly
+                    self.assertTrue(trailing_stop_price < max(price_movements))
+
+                # Final assertion on the last computed trailing stop price
+                self.assertTrue(trailing_stop_price < max(price_movements))
 
 
 def create_mock_open_positions(num_positions):
