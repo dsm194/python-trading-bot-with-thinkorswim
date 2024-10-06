@@ -73,17 +73,37 @@ class OrderBuilderWrapper:
         """
         Fetch the current allocation for a given strategy. If open_positions are not provided,
         use the internal mongo reference to fetch them.
+
+        Args:
+            strategy (str): The strategy name.
+            user (str): The user identifier.
+            account_id (str): The account identifier.
+
+        Returns:
+            float: The current allocation for the strategy.
         """
         open_positions = self.get_open_positions(user, account_id, strategy)
         outstanding_orders = self.get_queued_positions(user, account_id, strategy)
 
-        # Calculate total allocation from open positions
-        allocation = sum(position["Qty"] * position["Entry_Price"] for position in open_positions)
-        
-        # Add allocation from outstanding orders in the queue
-        allocation += sum(order["Qty"] * order["Entry_Price"] for order in outstanding_orders)
-        
-        return allocation
+        def calculate_allocation(positions):
+            """Helper function to calculate allocation with an option multiplier."""
+            allocation = 0
+            for position in positions:
+                qty = position["Qty"]
+                entry_price = position["Entry_Price"]
+                asset_type = position.get("Asset_Type", "EQUITY")  # Default to equity if not specified
+
+                # Multiply by 100 if it's an option
+                if asset_type.upper() == AssetType.OPTION:
+                    allocation += qty * entry_price * 100
+                else:
+                    allocation += qty * entry_price
+            return allocation
+
+        # Calculate total allocation from open positions and outstanding orders
+        total_allocation = calculate_allocation(open_positions) + calculate_allocation(outstanding_orders)
+
+        return total_allocation
     
         
     def load_default_settings(self, strategy_type):
