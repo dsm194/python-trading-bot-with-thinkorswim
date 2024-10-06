@@ -188,9 +188,10 @@ class OrderBuilderWrapper:
 
         price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][BUY_PRICE]) if side in ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"] else float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
 
+        # Removed this logic - I don't see any issue w/ OCO order using correct ask/bid prices
         # OCO ORDER NEEDS TO USE ASK PRICE FOR ISSUE WITH THE ORDER BEING TERMINATED UPON BEING PLACED
-        if OCOorder:
-            price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
+        # if OCOorder:
+        #     price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
 
         price = round(price, 2) if price >= 1 else round(price, 4)
         priceAsString = str(price)

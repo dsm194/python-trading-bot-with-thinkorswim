@@ -10,6 +10,7 @@ from google.oauth2.credentials import Credentials
 import os.path
 import os
 from datetime import datetime
+import re
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,45 +85,49 @@ class Gmail:
 
             return False
 
-    def handleOption(self, symbol):
+    def translate_option_symbol(self, symbol: str) -> str:
+        """
+        Reverses the option symbol from '.WM241011C210' to 'WM    241011C00210000'.
+        
+        Args:
+        symbol (str): The input symbol in the format '.WM241011C210'
 
-        symbol = symbol.replace(".", "", 1).strip()
+        Returns:
+        str: The symbol formatted with padding and an 8-digit strike price like 'WM    241011C00210000'
+        """
+        
+        # Regex pattern to extract components
+        pattern = r'\.(\w+)(\d{6})([CP])(\d+\.?\d*)'
 
-        ending_index = 0
+        match = re.match(pattern, symbol)
 
-        int_found = False
+        if not match:
+            raise ValueError("The symbol format is not valid")
+        
+        # Extract components
+        underlying = match.group(1)
+        expiration = match.group(2)
+        option_type_char = match.group(3)
+        strike_price = match.group(4)
 
-        for index, char in enumerate(symbol):
+        # Convert the strike price to 8-digit format (e.g., '210' becomes '00210000')
+        strike_price_numeric = float(strike_price)
+        strike_price_formatted = f'{int(strike_price_numeric * 1000):08d}'  # Multiply by 1000 and format as an 8-digit number
+        
+        # Format the expiration date
+        year = expiration[:2]
+        month = expiration[2:4]
+        day = expiration[4:6]
+        expiration_date = datetime.strptime(f"{year}-{month}-{day}", "%y-%m-%d")
 
-            try:
+        # Determine option type (CALL/PUT)
+        option_type = "CALL" if option_type_char == "C" else "PUT"
 
-                int(char)
+        # Format the translated symbol (e.g., 'WM    241011C00210000')
+        pre_symbol = f"{underlying.ljust(6)}{expiration}{option_type_char}{strike_price_formatted}"
 
-                int_found = True
+        return underlying, pre_symbol, expiration_date, option_type
 
-            except:
-
-                if not int_found:
-
-                    ending_index = index
-
-        exp = symbol[ending_index + 1:]
-
-        year = exp[:2]
-
-        month = exp[2:4]
-
-        day = exp[4:6]
-
-        option_type = "CALL" if "C" in exp else "PUT"
-
-        # .AA201211C5.5
-
-        # AA_121120C5.5
-
-        pre_symbol = f"{symbol[:ending_index + 1]}_{month}{day}{year}{exp[6:]}"
-
-        return symbol[:ending_index + 1], pre_symbol, datetime.strptime(f"{year}-{month}-{day}", "%y-%m-%d"), option_type
 
     def extractSymbolsFromEmails(self, payloads):
         """ METHOD TAKES SUBJECT LINES OF THE EMAILS WITH THE SYMBOLS AND SCANNER NAMES AND EXTRACTS THE NEEDED THE INFO FROM THEM.
@@ -144,17 +149,22 @@ class Gmail:
 
             try:
 
-                seperate = payload.split(":")
+                separate = payload.split(":")
 
-                if len(seperate) > 1:
+                # Check if the split yields at least 3 parts
+                if len(separate) < 3:
+                    self.logger.warning(f"{__class__.__name__} - Email Format Issue: {payload}")
+                    continue  # Skip to the next payload if the format is invalid
+
+                if len(separate) > 1:
 
                     contains = ["were added to", "was added to"]
 
                     for i in contains:
 
-                        if i in seperate[2]:
+                        if i in separate[2]:
 
-                            sep = seperate[2].split(i)
+                            sep = separate[2].split(i)
 
                             symbols = sep[0].strip().split(",")
 
@@ -162,10 +172,12 @@ class Gmail:
 
                             for symbol in symbols:
 
+                                symbol = symbol.strip()
+
                                 if strategy != "" and side != "":
 
                                     obj = {
-                                        "Symbol": symbol.strip(),
+                                        "Symbol": symbol,
                                         "Side": side.replace(".", " ").upper().strip(),
                                         "Strategy": strategy.replace(".", " ").upper().strip(),
                                         "Asset_Type": "EQUITY"
@@ -174,7 +186,7 @@ class Gmail:
                                     # IF THIS IS AN OPTION
                                     if "." in symbol:
 
-                                        symbol, pre_symbol, exp_date, option_type = self.handleOption(
+                                        symbol, pre_symbol, exp_date, option_type = self.translate_option_symbol(
                                             symbol)
 
                                         obj["Symbol"] = symbol
@@ -188,7 +200,7 @@ class Gmail:
                                         obj["Asset_Type"] = "OPTION"
 
                                     # CHECK TO SEE IF ASSET TYPE AND SIDE ARE A LOGICAL MATCH
-                                    if side.replace(".", " ").upper().strip() in ["SELL", "BUY"] and obj["Asset_Type"] == "EQUITY" or side.replace(".", " ").upper().strip() in ["SELL_TO_CLOSE", "SELL_TO_OPEN", "BUY_TO_CLOSE", "BUY_TO_OPEN"] and obj["Asset_Type"] == "OPTION":
+                                    if side.replace(".", " ").upper().strip() in ["SELL", "BUY"] and obj["Asset_Type"] == "EQUITY" or side.replace(".", " ").upper().strip() in ["SELL", "SELL_TO_CLOSE", "SELL_TO_OPEN", "BUY", "BUY_TO_CLOSE", "BUY_TO_OPEN"] and obj["Asset_Type"] == "OPTION":
 
                                         trade_data.append(obj)
 
@@ -211,7 +223,7 @@ class Gmail:
 
                 pass
 
-            except ValueError:
+            except ValueError as e:
 
                 self.logger.warning(
                     f"{__class__.__name__} - Email Format Issue: {payload}")
