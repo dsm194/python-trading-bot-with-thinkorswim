@@ -9,8 +9,9 @@ import os
 import httpx
 from api_trader.order_builder import OrderBuilderWrapper
 from assets.exception_handler import exception_handler
-from assets.helper_functions import getDatetime, selectSleep, modifiedAccountID
+from assets.helper_functions import getUTCDatetime, selectSleep, modifiedAccountID
 from pymongo import UpdateOne
+from pymongo.errors import BulkWriteError
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -22,7 +23,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 class Tasks:
 
     # THE TASKS CLASS IS USED FOR HANDLING ADDITIONAL TASKS OUTSIDE OF THE LIVE TRADER.
-    # YOU CAN ADD METHODS THAT STORE PROFIT LOSS DATA TO MONGO, SELL OUT POSITIONS AT END OF DAY, ECT.
+    # YOU CAN ADD METHODS THAT STORE PROFIT LOSS DATA TO MONGO, SELL OUT POSITIONS AT END OF DAY, ETC.
     # YOU CAN CREATE WHATEVER TASKS YOU WANT FOR THE BOT.
     # YOU CAN USE THE DISCORD CHANNEL NAMED TASKS IF YOU ANY HELP.
 
@@ -35,16 +36,19 @@ class Tasks:
     def checkOCOpapertriggers(self):
 
         # Are we during market hours?
-        dtNow = getDatetime()
+        dtNow = getUTCDatetime()
         marketHours = self.tdameritrade.getMarketHours(date=dtNow)
 
         # Fetch all open positions for the trader and the paper account in one query
-        open_positions = list(self.mongo.open_positions.find(
-            # {"Trader": self.user["Name"], "Account_ID": self.account_id, "Account_Position": "Paper", "Strategy":"MACD_XVER_8_17_9_EXP_DEBUG"}))
-            {"Trader": self.user["Name"], "Account_ID": self.account_id, "Account_Position": "Paper"}))
+        open_positions = list(self.open_positions.find({
+            "Trader": self.user["Name"], 
+            "Account_ID": self.account_id, 
+            "Account_Position": "Paper", 
+            # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG"]}
+        }))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
-        strategies = self.mongo.strategies.find({"Account_ID": self.account_id})
+        strategies = self.strategies.find({"Account_ID": self.account_id})
         strategy_dict = {strategy["Strategy"]: strategy for strategy in strategies}
 
         # Load exit strategies and store them in strategy_dict
@@ -146,7 +150,7 @@ class Tasks:
                     # Update max_price in MongoDB before sending any order
                     updated_max_price = exit_result["additional_params"]["max_price"]
                     if updated_max_price != position.get("max_price"):
-                        self.mongo.open_positions.update_one(
+                        self.open_positions.update_one(
                             {"_id": position["_id"]},
                             {"$set": {"max_price": updated_max_price}}
                         )
@@ -170,114 +174,146 @@ class Tasks:
         If so, closes the position in MongoDB accordingly.
         """
 
-        # Fetch open OCO positions
-        open_positions = self.open_positions.find(
-            {"Trader": self.user["Name"], "Account_ID": self.account_id, "Order_Type": "OCO"}
-        )
+        open_positions = self.open_positions.find({
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Order_Type": "OCO"
+        })
 
         bulk_updates = []
         rejected_inserts = []
         canceled_inserts = []
 
         for position in open_positions:
-            childOrderStrategies = position["childOrderStrategies"]
-            updates = {}
+            # Handle the different formats of childOrderStrategies (list or dict)
+            child_orders = position.get("childOrderStrategies")
+            if not child_orders:
+                self.logger.warning(f"No childOrderStrategies found for position {position['Symbol']}")
+                continue
+            
+            # Convert to list if it's in a dict format
+            if isinstance(child_orders, dict):
+                child_orders = [child_orders]  # Convert to list for uniform processing
 
-            for strategy in childOrderStrategies:
-                # Ensure 'childOrderStrategies' is in the strategy dictionary
-                if 'childOrderStrategies' in strategy:
-                    child_orders = strategy['childOrderStrategies']
+            # Process child orders whether they are single or OCO type
+            for child_order in child_orders:
+                # Check if childOrderStrategies contains nested orders (OCO format)
+                if "childOrderStrategies" in child_order:
+                    # Recursively process the OCO child orders
+                    for nested_order in child_order["childOrderStrategies"]:
+                        self.process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
+                else:
+                    # Process regular child order
+                    self.process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
 
-                    for order_data in child_orders:
-                        # Since 'order_id' is not shown in your structure, assume it needs to be derived or is not directly available
-                        # You'll likely need a method to map each order to its ID, so modify this section accordingly
-                        order_id = order_data.get("order_id")  # Replace with correct method to retrieve the order ID
-                        
-                        # If order_id is None, you might need to log or handle this case
-                        if not order_id:
-                            # self.logger.warning(f"Order ID missing for strategy: {strategy}")
-                            continue
+        # Execute bulk updates and inserts
+        self.apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
 
-                        updates = {}
+    def process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
+        """Processes individual child orders and updates status."""
+        order_id = child_order.get("Order_ID")
+        if not order_id:
+            self.logger.warning(f"Order ID missing in childOrder: {child_order}")
+            return
 
-                        # Query the order status using the order_id
-                        spec_order = self.tdameritrade.getSpecificOrder(order_id)
-                        new_status = spec_order["status"]
+        # Query the order status using the order_id
+        spec_order = self.tdameritrade.getSpecificOrder(order_id)
+        new_status = spec_order.get("status")
 
-                        # If the order is filled, handle it and stop processing further orders in this OCO group
-                        if new_status == "FILLED":
-                            self.pushOrder(position, spec_order)
+        if not new_status:
+            self.logger.warning(f"No status found for order_id: {order_id}")
+            return
 
-                        # Handle rejected or canceled orders
-                        elif new_status in ["CANCELED", "REJECTED"]:
-                            other = {
-                                "Symbol": position["Symbol"],
-                                "Order_Type": position["Order_Type"],
-                                "Order_Status": new_status,
-                                "Strategy": position["Strategy"],
-                                "Trader": self.user["Name"],
-                                "Date": getDatetime(),
-                                "Account_ID": self.account_id
-                            }
-                            
-                            # Append to the appropriate list based on the status
-                            if new_status == "REJECTED":
-                                rejected_inserts.append(other)
-                            else:
-                                canceled_inserts.append(other)
+        # If the order is filled, process the position and stop further checks
+        if new_status == "FILLED":
+            self.pushOrder(position, spec_order)
+            self.logger.info(f"Order {order_id} for {position['Symbol']} filled")
+            return
 
-                            # Log the status change
-                            self.logger.info(
-                                f"{new_status.upper()} ORDER For {position['Symbol']} - "
-                                f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
-                            )
-                        else:
-                            # If the status is not terminal, prepare the update for MongoDB
-                            updates[f"childOrderStrategies.{order_id}.Order_Status"] = new_status
+        # Handle rejected or canceled orders
+        elif new_status in ["CANCELED", "REJECTED"]:
+            other = {
+                "Symbol": position["Symbol"],
+                "Order_Type": position["Order_Type"],
+                "Order_Status": new_status,
+                "Strategy": position["Strategy"],
+                "Trader": self.user["Name"],
+                "Date": getUTCDatetime(),
+                "Account_ID": self.account_id
+            }
 
-                        # Queue the updates for bulk execution
-                        if updates:
-                            bulk_updates.append(
-                                UpdateOne(
-                                    {"Trader": self.user["Name"], "Account_ID": self.account_id, "Symbol": position["Symbol"], "Strategy": position["Strategy"]},
-                                    {"$set": updates}
-                                )
-                            )
+            if new_status == "REJECTED":
+                rejected_inserts.append(other)
+            else:
+                canceled_inserts.append(other)
 
+            self.logger.info(
+                f"{new_status.upper()} ORDER for {position['Symbol']} - "
+                f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
+            )
+        else:
+            # Use array filters to update the specific child order's status based on Order_ID
+            updates = {
+                "$set": {
+                    "childOrderStrategies.$[orderElem].Order_Status": new_status
+                }
+            }
 
-        # Perform bulk updates in MongoDB
+            # Use array filters to match the element with the correct Order_ID
+            array_filters = [{"orderElem.Order_ID": order_id}]
+            
+            bulk_updates.append(
+                UpdateOne(
+                    {
+                        "Trader": self.user["Name"],
+                        "Account_ID": self.account_id,
+                        "Symbol": position["Symbol"],
+                        "Strategy": position["Strategy"]
+                    },
+                    updates,
+                    array_filters=array_filters
+                )
+            )
+
+    def apply_bulk_updates(self, bulk_updates, rejected_inserts, canceled_inserts):
+        """Applies bulk updates and inserts to MongoDB."""
         if bulk_updates:
-            self.open_positions.bulk_write(bulk_updates)
+            try:
+                self.open_positions.bulk_write(bulk_updates)
+            except BulkWriteError as e:
+                self.logger.error(f"Bulk write error: {e.details}")
 
-        # Perform bulk inserts for rejected/canceled orders
         if rejected_inserts:
             self.rejected.insert_many(rejected_inserts)
-
         if canceled_inserts:
             self.canceled.insert_many(canceled_inserts)
 
 
+
     @exception_handler
     def extractOCOchildren(self, spec_order):
-        """This method extracts oco children order ids and then sends it to be stored in mongo open positions. 
+        """This method extracts OCO children order ids and sends it to be stored in mongo open positions.
         Data will be used by checkOCOtriggers with order ids to see if stop loss or take profit has been triggered.
-
         """
 
         oco_children = {
             "childOrderStrategies": {}
         }
 
-        childOrderStrategies = spec_order["childOrderStrategies"][0]["childOrderStrategies"]
+        # Retrieve the outer childOrderStrategies array, or an empty list if not present
+        outer_child_order_strategies = spec_order.get("childOrderStrategies", [{}])
 
-        for child in childOrderStrategies:
+        # Check if there's a nested childOrderStrategies array in the first object
+        nested_child_order_strategies = outer_child_order_strategies[0].get("childOrderStrategies", outer_child_order_strategies)
 
-            # Use .get() to safely retrieve keys, and provide None as a default if keys are missing
-            exit_price = child.get("stopPrice", child.get("price"))
+        # Now iterate over child_order_strategies (either the nested array or the outer array itself)
+        for child in nested_child_order_strategies:
+            # Safely retrieve keys, default to None if missing
+            exit_price = child.get("stopPrice", child.get("activationPrice", child.get("price")))
             exit_type = "STOP LOSS" if "stopPrice" in child else "TAKE PROFIT"
 
             # Ensure that exit_price exists, otherwise handle missing values
-            oco_children["childOrderStrategies"][child.get("Order_ID")] = {
+            oco_children["childOrderStrategies"][str(child.get("Order_ID", "Unknown_Order_ID"))] = {
                 "Side": child.get("orderLegCollection", [{}])[0].get("instruction"),
                 "Exit_Price": exit_price,
                 "Exit_Type": exit_type if exit_price is not None else None,
@@ -285,6 +321,7 @@ class Tasks:
             }
 
         return oco_children
+
 
     @exception_handler
     def addNewStrategy(self, strategy, asset_type):
@@ -294,19 +331,20 @@ class Tasks:
             strategy ([str]): STRATEGY NAME
         """
 
-        obj = {"Active": True,
+        obj = {"Active": False,
                "Order_Type": "STANDARD",
                "Asset_Type": asset_type,
                "Position_Size": 500,
                "Position_Type": "LONG",
                "Account_ID": self.account_id,
                "Strategy": strategy,
+               "MaxPositionSize": 5000
                }
 
         # IF STRATEGY NOT IN STRATEGIES COLLECTION IN MONGO, THEN ADD IT
 
         self.strategies.update_one(
-            {"Strategy": strategy},
+            {"Account_ID": self.account_id, "Strategy": strategy, "Asset_Type": asset_type},
             {"$setOnInsert": obj},
             upsert=True
         )

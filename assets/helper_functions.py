@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pathlib import Path
 import os
-import pytz
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,9 +20,9 @@ def getDatetime():
         [Datetime Object]: [formated datetime object]
     """
 
-    dt = datetime.now(tz=pytz.UTC).replace(microsecond=0)
+    dt = datetime.now(tz=timezone.utc).replace(microsecond=0)
 
-    dt = dt.astimezone(pytz.timezone(TIMEZONE))
+    dt = dt.astimezone(ZoneInfo(TIMEZONE))
 
     return datetime.strptime(dt.strftime(
         "%Y-%m-%d %H:%M:%S"), "%Y-%m-%d %H:%M:%S")
@@ -35,9 +35,12 @@ def getUTCDatetime():
         [Datetime Object]: [formated datetime object]
     """
 
-    dt = datetime.utcnow().replace(microsecond=0)
+    dt = datetime.now(tz=timezone.utc).replace(microsecond=0)
 
     return dt.isoformat()
+
+def convertStringToDatetime(date_string, timezone = timezone.utc):
+    return datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%S%z").astimezone(timezone)
 
 
 def selectSleep():

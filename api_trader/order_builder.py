@@ -2,7 +2,7 @@
 from api_trader.strategies import fixed_percentage_exit
 from api_trader.strategies import atr_exit
 from api_trader.strategies import trailing_stop_exit
-from assets.helper_functions import getDatetime
+from assets.helper_functions import getUTCDatetime
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -251,7 +251,7 @@ class OrderBuilderWrapper:
                     "Entry_Price": price,
                     "Last_Price": price,
                     "Max_Price": price,
-                    "Entry_Date": getDatetime(),
+                    "Entry_Date": getUTCDatetime(),
                 })
             else:
                 self.logger.warning(f"{side} ORDER STOPPED: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; SYMBOL: {symbol}; SHARES: {shares}; PRICE: {price}; POSITION_SIZE: {position_size};")
@@ -270,7 +270,7 @@ class OrderBuilderWrapper:
                 "Entry_Date": trade_data["Entry_Date"],
                 "Exit_Price": price,
                 "Last_Price": price,
-                "Exit_Date": getDatetime(),
+                "Exit_Date": getUTCDatetime(),
                 "Qty": trade_data["Qty"],
                 "Position_Size": trade_data["Position_Size"]
             })

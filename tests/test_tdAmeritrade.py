@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 
-import httpx
+from requests import HTTPError
 from tdameritrade import TDAmeritrade  # Replace with actual module
 
 class TestTDAmeritrade(unittest.TestCase):
@@ -81,7 +81,6 @@ class TestTDAmeritrade(unittest.TestCase):
         
         # Assert MongoDB update was called
         self.mongo_mock.users.update_one.assert_called_once()
-
 
 
     @patch('tdameritrade.client_from_token_file')  # First argument in test function
@@ -465,7 +464,7 @@ class TestTDAmeritrade(unittest.TestCase):
         mock_order_response = MagicMock()
         mock_order_response.status_code = 200
         mock_order_response.json.return_value = {
-            'orderId': order_id,
+            'Order_ID': order_id,
             'status': 'FILLED',
             'symbol': 'AAPL',
             'quantity': 10
@@ -496,7 +495,7 @@ class TestTDAmeritrade(unittest.TestCase):
         mock_client.get_order.assert_called_once_with(order_id, mock_get_account_numbers_response.json.return_value[0]["hashValue"])
 
         # Assert the order details
-        self.assertEqual(order['orderId'], order_id)
+        self.assertEqual(order['Order_ID'], order_id)
         self.assertEqual(order['status'], 'FILLED')
         self.assertEqual(order['symbol'], 'AAPL')
         self.assertEqual(order['quantity'], 10)
@@ -591,7 +590,35 @@ class TestTDAmeritrade(unittest.TestCase):
         result = self.td_ameritrade.getSpecificOrder(id=12345)
 
         # Ensure that the method returns the correct result
-        self.assertEqual(result, {"orderId": 12345})
+        self.assertEqual(result, {"Order_ID": 12345})
+
+
+    @patch('tdameritrade.TDAmeritrade.checkTokenValidity')
+    def test_get_specific_order_handles_404(self, mock_checkTokenValidity):
+        mock_checkTokenValidity.return_value = True
+
+        # Mock the get_account_numbers method to return a response with a 404 status code
+        mock_response = MagicMock()
+        mock_response.status_code = 404  # Simulating a 404 response
+
+        # Create a mock client with necessary methods
+        mock_client = MagicMock()    
+        mock_client.get_account_numbers.return_value = mock_response
+        
+        # Set the mock client as the client attribute
+        self.td_ameritrade.client = mock_client
+
+        # Create a dummy queue_order
+        queue_order = {"Order_ID": "invalid_order_id"}
+
+        # Call the method that uses getSpecificOrder
+        spec_order = self.td_ameritrade.getSpecificOrder(queue_order["Order_ID"])
+
+        # Handle the response as expected in the code
+        orderMessage = "Order not found or API is down." if spec_order is None else spec_order.get('message', '')
+
+        # Assert the correct message is set for the 404 case
+        self.assertEqual(orderMessage, "Order not found or API is down.")
 
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidity')
@@ -957,9 +984,12 @@ class TestTDAmeritrade(unittest.TestCase):
         self.td_ameritrade.client = mock_client
         result = self.td_ameritrade.getMarketHours(markets=['EQUITY'])
 
-        # Ensure that the method returns the correct JSON data
+        # Verify that the call was made with a datetime object (since now we default to current datetime)
+        mock_client.get_market_hours.assert_called_once()
+        called_args, called_kwargs = mock_client.get_market_hours.call_args
         self.assertEqual(result, {"market": "EQUITY", "hours": "9:30 AM - 4:00 PM"})
-        mock_client.get_market_hours.assert_called_once_with(markets=['EQUITY'], date=None)
+        self.assertEqual(called_kwargs['markets'], ['EQUITY'])
+        self.assertIsInstance(called_kwargs['date'], datetime)  # Ensure 'date' is a datetime object
 
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidity')
@@ -998,6 +1028,29 @@ class TestTDAmeritrade(unittest.TestCase):
         # Ensure that the method logs the exception and returns None
         self.td_ameritrade.logger.error.assert_called_once_with("An error occurred while retrieving market hours for markets: ['EQUITY']. Error: API error")
         self.assertIsNone(result)
+
+    
+    @patch('tdameritrade.TDAmeritrade.checkTokenValidity')
+    def test_get_account_numbers_handles_404(self, mock_checkTokenValidity):
+        # Mock checkTokenValidity to return True
+        mock_checkTokenValidity.return_value = True
+
+        # Set up the mock to raise a 404 HTTPError
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.json.return_value = {}  # Assuming the API returns an empty dict on 404
+
+        # Mock the client to raise an exception during get_market_hours
+        mock_client = MagicMock()
+        mock_client.get_account_numbers.return_value = mock_response
+        self.td_ameritrade.client = mock_client
+        
+        # Call the method and assert it handles the 404 gracefully
+        account_numbers = self.td_ameritrade.getAccount()
+        
+        # Assert that account_numbers is None (or empty) when 404 occurs
+        self.assertIsNone(account_numbers)
+        
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,7 +4,7 @@ import urllib.parse as up
 import time
 import httpx
 import requests
-from assets.helper_functions import modifiedAccountID
+from assets.helper_functions import getUTCDatetime, modifiedAccountID
 from assets.exception_handler import exception_handler
 from schwab.auth import easy_client
 from schwab.auth import client_from_manual_flow
@@ -314,6 +314,7 @@ class TDAmeritrade:
 
         if isValid:
             resp = self.client.get_account_numbers()
+            #resp.status_code == 404 breaks calling code
             if resp.status_code == httpx.codes.OK:
                 # The response has the following structure. If you have multiple linked
                 # accounts, you'll need to inspect this object to find the hash you want:
@@ -334,7 +335,7 @@ class TDAmeritrade:
                         # return None
                     
                     # Parse the JSON only if it's a successful response
-                    return response.json()
+                    return self.rename_order_ids(response.json())
                     
                 except Exception as e:
                     self.logger.error(f"An error occurred while attempting to get specific order: {id}. Error: {e}")
@@ -401,7 +402,12 @@ class TDAmeritrade:
                 if markets is None:
                     markets = [market for market in schwabBaseClient.MarketHours.Market]
                     
-                response = self.client.get_market_hours(markets=markets, date=date)
+                # Use the current UTC datetime if no date is provided
+                if date is None:
+                    date = getUTCDatetime()
+
+                dtNow_datetime = datetime.fromisoformat(date)                    
+                response = self.client.get_market_hours(markets=markets, date=dtNow_datetime)
 
                 # Check if the response status is not 200
                 if response.status_code != 200:

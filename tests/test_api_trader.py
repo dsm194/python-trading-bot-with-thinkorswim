@@ -1,3 +1,4 @@
+import os
 import random
 import re
 import string
@@ -69,11 +70,38 @@ class TestApiTrader(unittest.TestCase):
             "quantity": 10
         }
 
-
-    @patch('api_trader.ApiTrader.run_tasks_with_exit_check')
-    def test_initialization_live_trader(self, mock_run_tasks_with_exit_check):
+    @patch.dict(os.environ, {'RUN_TASKS': 'True'})  # Set the environment variable for the test
+    def test_initialization_live_trader(self):
         
-        # Check if the initialization sets RUN_LIVE_TRADER to True
+        # Debug: Check the environment variable directly in the test
+        print("RUN_TASKS (within test):", os.getenv('RUN_TASKS'))
+
+        # Set up your mocks and variables
+        self.user = {
+            "Name": "TestUser",
+            "Accounts": {
+                "12345": {
+                    "Account_Position": "Live"
+                }
+            }
+        }
+        self.mongo = MagicMock()
+        self.push = MagicMock()
+        self.logger = MagicMock()
+        self.account_id = "12345"
+        self.tdameritrade = MagicMock()
+
+        # Initialize the ApiTrader
+        self.api_trader = ApiTrader(
+            user=self.user,
+            mongo=self.mongo,
+            push=self.push,
+            logger=self.logger,
+            account_id=self.account_id,
+            tdameritrade=self.tdameritrade
+        )
+
+        # Check if RUN_LIVE_TRADER is set to True
         self.assertTrue(self.api_trader.RUN_LIVE_TRADER)
         self.assertIsInstance(self.api_trader.mongo.users, MagicMock)
         self.assertIsInstance(self.api_trader.mongo.open_positions, MagicMock)
@@ -82,10 +110,19 @@ class TestApiTrader(unittest.TestCase):
         self.assertIsInstance(self.api_trader.mongo.rejected, MagicMock)
         self.assertIsInstance(self.api_trader.mongo.canceled, MagicMock)
         self.assertIsInstance(self.api_trader.mongo.queue, MagicMock)
+
+        # Assert that task_thread is running
+        self.assertTrue(hasattr(self.api_trader, 'task_thread'))
         self.assertTrue(self.api_trader.task_thread.is_alive())
 
+
+    @patch.dict(os.environ, {'RUN_TASKS': 'False'})  # Set the environment variable for the test
     @patch('api_trader.ApiTrader.run_tasks_with_exit_check')
     def test_initialization_paper_trader(self, mock_run_tasks_with_exit_check):
+
+        # Debug: Check the environment variable directly in the test
+        print("RUN_TASKS (within test):", os.getenv('RUN_TASKS'))
+
         self.user["Accounts"]["12345"]["Account_Position"] = "Paper"
         self.api_trader = ApiTrader(
             user=self.user,
@@ -95,8 +132,12 @@ class TestApiTrader(unittest.TestCase):
             account_id=self.account_id,
             tdameritrade=self.tdameritrade
         )
+        
         self.assertFalse(self.api_trader.RUN_LIVE_TRADER)
-        self.assertTrue(hasattr(self.api_trader, 'task_thread'))
+        
+        # Assert that task_thread is NOT created when RUN_TASKS is False
+        self.assertFalse(hasattr(self.api_trader, 'task_thread'))
+
 
     # @patch('api_trader.ApiTrader.check_stop_signal', return_value=False)
     # @patch('api_trader.ApiTrader.runTasks')
@@ -262,7 +303,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.pushOrder = MagicMock()
 
         # Mock the getSpecificOrder to return a FILLED status
-        self.api_trader.tdameritrade.getSpecificOrder.side_effect = [{"status": "FILLED", "orderId": "12345"}]
+        self.api_trader.tdameritrade.getSpecificOrder.side_effect = [{"status": "FILLED", "Order_ID": "12345"}]
         self.api_trader.queue = MagicMock()
         self.api_trader.queue.find.return_value = [
             {"Symbol": "AAPL", "Order_ID": "12345", "Order_Type": "STANDARD",
@@ -282,7 +323,7 @@ class TestApiTrader(unittest.TestCase):
                 "Direction": "OPEN POSITION", "Qty": 100, "Entry_Price": 150,
                 "Strategy": "test_strategy", "Asset_Type": "EQUITY", "Side": "BUY"
             }, 
-            {"status": "FILLED", "orderId": "12345"}
+            {"status": "FILLED", "Order_ID": "12345"}
         )
         self.api_trader.logger.warning.assert_not_called()
 
@@ -333,7 +374,7 @@ class TestApiTrader(unittest.TestCase):
         ]
         
         # Mock the specific order response for "CANCELED"
-        self.api_trader.tdameritrade.getSpecificOrder = MagicMock(return_value={"orderId": "12345", "status": "CANCELED"})
+        self.api_trader.tdameritrade.getSpecificOrder = MagicMock(return_value={"Order_ID": "12345", "status": "CANCELED"})
         
         # Add mock collections (queue, canceled, and rejected) to ApiTrader instance
         self.api_trader.queue = self.mongo.return_value.__getitem__.return_value  # Mock the queue collection
@@ -362,7 +403,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.canceled.insert_one.assert_called_with(expected_canceled_order)
 
         # Now handle the "REJECTED" case
-        self.api_trader.tdameritrade.getSpecificOrder.return_value = {"orderId": "12345", "status": "REJECTED"}
+        self.api_trader.tdameritrade.getSpecificOrder.return_value = {"Order_ID": "12345", "status": "REJECTED"}
         self.api_trader.updateStatus()
 
         # Verify the order was removed from the queue again
@@ -400,7 +441,7 @@ class TestApiTrader(unittest.TestCase):
 
         # Mock the specific order response with a non-matching status
         self.api_trader.tdameritrade.getSpecificOrder = MagicMock(return_value={
-            "orderId": "12345", 
+            "Order_ID": "12345", 
             "status": "PENDING",  # Non-matching status
             # No childOrderStrategies here
         })
@@ -723,12 +764,12 @@ class TestApiTrader(unittest.TestCase):
         num_positions = 1
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
-        self.api_trader.mongo.open_positions = mock_open_positions
+        self.api_trader.open_positions = mock_open_positions
 
         # Mock strategies
         mock_strategies = MagicMock()
         mock_strategies.find.return_value = create_mock_strategies(num_positions)
-        self.api_trader.mongo.strategies = mock_strategies
+        self.api_trader.strategies = mock_strategies
 
         # Mock quotes
         mock_quote_response = create_mock_quotes(num_positions)
@@ -778,7 +819,7 @@ class TestApiTrader(unittest.TestCase):
 
         # Verify that the queue.update_one was called with the correct arguments
         # Or, if you want to verify the sequence of multiple calls, use assert_has_calls
-        self.api_trader.mongo.open_positions.update_one.assert_has_calls([
+        self.api_trader.open_positions.update_one.assert_has_calls([
             call(
                 {"_id": mock_open_positions.find.return_value[0]["_id"]},
                 {"$set": {"max_price": mock_exit_response["additional_params"]["max_price"]}}
@@ -797,12 +838,12 @@ class TestApiTrader(unittest.TestCase):
         num_positions = 1
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
-        self.api_trader.mongo.open_positions = mock_open_positions
+        self.api_trader.open_positions = mock_open_positions
 
         # Mock strategies
         mock_strategies = MagicMock()
         mock_strategies.find.return_value = create_mock_strategies(num_positions)
-        self.api_trader.mongo.strategies = mock_strategies
+        self.api_trader.strategies = mock_strategies
 
         # Call the method
         self.api_trader.checkOCOpapertriggers()
@@ -823,12 +864,12 @@ class TestApiTrader(unittest.TestCase):
         num_positions = 1
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
-        self.api_trader.mongo.open_positions = mock_open_positions
+        self.api_trader.open_positions = mock_open_positions
 
         # Mock strategies
         mock_strategies = MagicMock()
         mock_strategies.find.return_value = create_mock_strategies(num_positions)
-        self.api_trader.mongo.strategies = mock_strategies
+        self.api_trader.strategies = mock_strategies
         
         # Call the method
         self.api_trader.checkOCOpapertriggers()
@@ -849,12 +890,12 @@ class TestApiTrader(unittest.TestCase):
         num_positions = 1
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
-        self.api_trader.mongo.open_positions = mock_open_positions
+        self.api_trader.open_positions = mock_open_positions
 
         # Mock strategies
         mock_strategies = MagicMock()
         mock_strategies.find.return_value = create_mock_strategies(num_positions)
-        self.api_trader.mongo.strategies = mock_strategies
+        self.api_trader.strategies = mock_strategies
         
         # Call the method
         self.api_trader.checkOCOpapertriggers()
@@ -884,12 +925,12 @@ class TestApiTrader(unittest.TestCase):
         num_positions = 5000
         mock_open_positions = MagicMock()
         mock_open_positions.find.return_value = create_mock_open_positions(num_positions)
-        self.api_trader.mongo.open_positions = mock_open_positions
+        self.api_trader.open_positions = mock_open_positions
 
         # Mock strategies
         mock_strategies = MagicMock()
         mock_strategies.find.return_value = create_mock_strategies(num_positions)
-        self.api_trader.mongo.strategies = mock_strategies
+        self.api_trader.strategies = mock_strategies
 
         # Mock quotes
         mock_quotes_data = create_mock_quotes(num_positions)
@@ -952,7 +993,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"order_id": "order1"}
+                            {"Order_ID": "order1"}
                         ]
                     }
                 ]
@@ -964,7 +1005,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"order_id": "order2"}
+                            {"Order_ID": "order2"}
                         ]
                     }
                 ]
@@ -976,7 +1017,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"order_id": "order3"}
+                            {"Order_ID": "order3"}
                         ]
                     }
                 ]
@@ -988,7 +1029,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"order_id": "order4"}
+                            {"Order_ID": "order4"}
                         ]
                     }
                 ]
@@ -997,10 +1038,10 @@ class TestApiTrader(unittest.TestCase):
 
         # Mock getSpecificOrder for different orders
         self.api_trader.tdameritrade.getSpecificOrder.side_effect = [
-            {"status": "FILLED", "orderId": "order1"},
-            {"status": "CANCELED", "orderId": "order2"},
-            {"status": "REJECTED", "orderId": "order3"},
-            {"status": "WORKING", "orderId": "order4"},
+            {"status": "FILLED", "Order_ID": "order1"},
+            {"status": "CANCELED", "Order_ID": "order2"},
+            {"status": "REJECTED", "Order_ID": "order3"},
+            {"status": "WORKING", "Order_ID": "order4"},
         ]
 
         # Call the method under test
@@ -1012,21 +1053,24 @@ class TestApiTrader(unittest.TestCase):
                 "Symbol": "SYM1",
                 "Order_Type": "OCO",
                 "Strategy": "STRATEGY_A",
-                "childOrderStrategies": [{"childOrderStrategies": [{"order_id": "order1"}]}]
+                "childOrderStrategies": [{"childOrderStrategies": [{"Order_ID": "order1"}]}]
             },
-            {"status": "FILLED", "orderId": "order1"}
+            {"status": "FILLED", "Order_ID": "order1"}
         )
 
         # Check logger info for CANCELED order
         self.api_trader.logger.info.assert_any_call(
-            "CANCELED ORDER For SYM2 - TRADER: TraderName - ACCOUNT ID: **3456"
+            "CANCELED ORDER for SYM2 - TRADER: TraderName - ACCOUNT ID: **3456"
         )
 
         # Verify that MongoDB updates were correctly prepared
         self.api_trader.open_positions.bulk_write.assert_called_once_with([
             UpdateOne(
                 {"Trader": self.api_trader.user["Name"], "Account_ID": self.api_trader.account_id, "Symbol": "SYM4", "Strategy": "STRATEGY_D"},
-                {"$set": {"childOrderStrategies.order4.Order_Status": "WORKING"}}
+                {'$set': {'childOrderStrategies.$[orderElem].Order_Status': 'WORKING'}},
+                False, None,
+                [{'orderElem.Order_ID': 'order4'}],  # The array filter for orderElem.Order_ID
+                None
             )
         ])
 
@@ -1166,16 +1210,9 @@ class TestApiTrader(unittest.TestCase):
         # Initialize the ApiTrader instance
         self.api_trader = ApiTrader()
         # Mock dependencies
-        # self.api_trader.queue = MagicMock()
-        # self.api_trader.mongo = MagicMock()
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
         self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-        # self.api_trader.tdameritrade = MagicMock()
-        # self.api_trader.open_positions = MagicMock()
-        # self.api_trader.open_positions.bulk_write = MagicMock()
-        # self.api_trader.canceled = MagicMock()
-        # self.api_trader.rejected = MagicMock()
 
         # Mocking an order structure with missing fields to test edge cases
         spec_order = {
@@ -1212,6 +1249,144 @@ class TestApiTrader(unittest.TestCase):
 
         # Assert that the output matches the expected structure
         self.assertEqual(result, expected_output)
+
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_handles_missing_childOrderStrategies(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        # Create a spec_order with no "childOrderStrategies"
+        spec_order = {
+            "orderLegCollection": [{"instruction": "SELL"}],
+            "stopPrice": 105.0,
+            "price": 110.0,
+            "status": "Filled"
+        }
+
+        expected_output = {
+            "childOrderStrategies": {
+                "Unknown_Order_ID": {
+                    "Side": None,
+                    "Exit_Price": None,
+                    "Exit_Type": None,
+                    "Order_Status": None
+                }
+            }
+        }
+
+        # Call the method and check if it returns an empty childOrderStrategies dict as expected
+        result = self.api_trader.extractOCOchildren(spec_order)
+
+        # Assert the method returns the expected result
+        self.assertEqual(result, expected_output)
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_handles_empty_childOrderStrategies(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        # Create a spec_order with empty "childOrderStrategies"
+        spec_order = {
+            "childOrderStrategies": [{}],  # Empty structure, simulating an edge case
+            "orderLegCollection": [{"instruction": "SELL"}],
+            "stopPrice": 105.0,
+            "price": 110.0,
+            "status": "Filled"
+        }
+
+        expected_output = {
+            "childOrderStrategies": {
+                "Unknown_Order_ID": {
+                    "Side": None,
+                    "Exit_Price": None,
+                    "Exit_Type": None,
+                    "Order_Status": None
+                }
+            }
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order)
+        self.assertEqual(result, expected_output)
+
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_falls_back_to_outer_array_if_no_nested_childOrderStrategies(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        spec_order_no_nested_childOrderStrategies = {
+            "childOrderStrategies": [
+                {
+                    "Order_ID": "54321",
+                    "orderLegCollection": [{"instruction": "SELL"}],
+                    "stopPrice": 120.0,
+                    "status": "WORKING"
+                }
+            ]
+        }
+
+        expected_result = {
+            "childOrderStrategies": {
+                "54321": {
+                    "Side": "SELL",
+                    "Exit_Price": 120.0,
+                    "Exit_Type": "STOP LOSS",
+                    "Order_Status": "WORKING"
+                }
+            }
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order_no_nested_childOrderStrategies)
+        self.assertEqual(result, expected_result)
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_handles_valid_nested_childOrderStrategies(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        spec_order_valid_nested_childOrderStrategies = {
+            "childOrderStrategies": [{
+                "childOrderStrategies": [
+                    {
+                        "Order_ID": "12345",
+                        "orderLegCollection": [{"instruction": "BUY"}],
+                        "price": 100.0,
+                        "status": "FILLED"
+                    }
+                ]
+            }]
+        }
+
+        expected_result = {
+            "childOrderStrategies": {
+                "12345": {
+                    "Side": "BUY",
+                    "Exit_Price": 100.0,
+                    "Exit_Type": "TAKE PROFIT",
+                    "Order_Status": "FILLED"
+                }
+            }
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order_valid_nested_childOrderStrategies)
+        self.assertEqual(result, expected_result)
 
 
     @patch('api_trader.ApiTrader.sendOrder')  # Mock the order sending

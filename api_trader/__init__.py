@@ -1,5 +1,4 @@
-import httpx
-from assets.helper_functions import assign_order_ids, getDatetime, modifiedAccountID
+from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
 from threading import Thread
 from assets.exception_handler import exception_handler
@@ -8,9 +7,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 from pymongo.errors import WriteError, WriteConcernError
-import traceback
 import time
-from random import randint
 
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -18,8 +15,6 @@ THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 path = Path(THIS_FOLDER)
 
 load_dotenv(dotenv_path=f"{path.parent}/config.env")
-
-RUN_TASKS = True if os.getenv('RUN_TASKS') == "True" else False
 
 
 class ApiTrader(Tasks, OrderBuilderWrapper):
@@ -37,6 +32,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         
         try:
 
+            self.RUN_TASKS = os.getenv('RUN_TASKS') == "True"
             self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
 
             # Instance variables
@@ -65,7 +61,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             # Path to the stop signal file
             self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
 
-            if RUN_TASKS:
+            if self.RUN_TASKS:
                 self.task_thread = Thread(target=self.run_tasks_with_exit_check, daemon=True)
                 self.task_thread.start()
             else:
@@ -133,7 +129,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                     "Order_Status": "REJECTED",
                     "Strategy": strategy,
                     "Trader": self.user["Name"],
-                    "Date": getDatetime(),
+                    "Date": getUTCDatetime(),
                     "Account_ID": self.account_id
                 }
 
@@ -191,10 +187,13 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         for queue_order in queued_orders:
 
-            spec_order = self.tdameritrade.getSpecificOrder(
-                queue_order["Order_ID"])
-            
-            orderMessage = spec_order.get('message', '')
+            spec_order = self.tdameritrade.getSpecificOrder(queue_order["Order_ID"])
+
+            # Check if spec_order is None before attempting to access it
+            if spec_order is None:
+                orderMessage = "Order not found or API is down."
+            else:
+                orderMessage = spec_order.get('message', '')
 
             # ORDER ID NOT FOUND. ASSUME REMOVED OR PAPER TRADING
             if "error" in orderMessage or "Order not found" in orderMessage:
@@ -228,7 +227,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             order_type = queue_order["Order_Type"]
 
             # CHECK IF QUEUE ORDER ID EQUALS TDA ORDER ID
-            if queue_order["Order_ID"] == spec_order["orderId"]:
+            if queue_order["Order_ID"] == spec_order["Order_ID"]:
 
                 if new_status == "FILLED":
 
@@ -252,7 +251,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                         "Order_Status": new_status,
                         "Strategy": queue_order["Strategy"],
                         "Trader": self.user["Name"],
-                        "Date": getDatetime(),
+                        "Date": getUTCDatetime(),
                         "Account_ID": self.account_id
                     }
 
@@ -295,6 +294,10 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         price = round(price, 2) if price >= 1 else round(price, 4)
 
+        # Extract the entered time from the spec_order if available
+        entered_time_str = spec_order.get("enteredTime")
+        entry_date = convertStringToDatetime(entered_time_str) if entered_time_str else queue_order.get("Entry_Date", getUTCDatetime())
+
         obj = {
             "Symbol": symbol,
             "Strategy": strategy,
@@ -325,7 +328,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             obj.update({
                 "Qty": shares,
                 "Entry_Price": price,
-                "Entry_Date": getDatetime()
+                "Entry_Date": entry_date  # Use the more accurate entry date
             })
             collection_insert = self.open_positions.insert_one
             message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Trader: {self.user['Name']}"
@@ -335,21 +338,24 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id})
 
             if position is not None:
-
                 obj.update({
                     "Qty": position["Qty"],
                     "Entry_Price": position["Entry_Price"],
-                    "Entry_Date": position["Entry_Date"],
+                    "Entry_Date": position["Entry_Date"],  # Use the entry date from open position
                     "Exit_Price": price,
-                    "Exit_Date": getDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
+                    "Exit_Date": getUTCDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
                 })
 
                 # Check if the position is already in closed_positions
                 already_closed = self.closed_positions.count_documents({
-                    "Trader": self.user["Name"], "Account_ID": account_id,
-                    "Symbol": symbol, "Strategy": strategy, 
-                    "Entry_Date": position["Entry_Date"], "Entry_Price": position["Entry_Price"],
-                    "Exit_Price": price, "Qty": position["Qty"]
+                    "Trader": self.user["Name"],
+                    "Account_ID": account_id,
+                    "Symbol": symbol,
+                    "Strategy": strategy, 
+                    "Entry_Date": position["Entry_Date"],
+                    "Entry_Price": position["Entry_Price"],
+                    "Exit_Price": price,
+                    "Qty": position["Qty"]
                 })
 
                 if already_closed == 0:
@@ -361,8 +367,6 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
                 if is_removed.deleted_count == 0:
                     self.logger.error(f"Failed to delete open position for {symbol}")
-
-            
 
         # Push to MongoDB with retry logic
         if collection_insert:
@@ -400,7 +404,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         self.user = self.mongo.users.find_one({"Name": self.user["Name"]})
 
         # FORBIDDEN SYMBOLS
-        forbidden_symbols = self.mongo.forbidden.find({"Account_ID": str(self.account_id)})
+        forbidden_symbols_cursor = self.mongo.forbidden.find({"Account_ID": self.account_id})
+        forbidden_symbols = {doc['Symbol'] for doc in forbidden_symbols_cursor}
 
         for row in trade_data:
 
