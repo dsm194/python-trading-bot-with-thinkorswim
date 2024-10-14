@@ -1117,7 +1117,7 @@ class TestApiTrader(unittest.TestCase):
                 {
                     "childOrderStrategies": [
                         {
-                            "Order_ID": "order1",
+                            "Order_ID": 86753098675309,
                             "orderLegCollection": [
                                 {"instruction": "SELL"}
                             ],
@@ -1125,7 +1125,7 @@ class TestApiTrader(unittest.TestCase):
                             "status": "WORKING"
                         },
                         {
-                            "Order_ID": "order2",
+                            "Order_ID": 1001859866918,
                             "orderLegCollection": [
                                 {"instruction": "SELL"}
                             ],
@@ -1139,20 +1139,22 @@ class TestApiTrader(unittest.TestCase):
 
         # Expected structure to be returned
         expected_output = {
-            "childOrderStrategies": {
-                "order1": {
+            "childOrderStrategies": [
+                {
                     "Side": "SELL",
-                    "Exit_Price": 100.0,
+                    "Exit_Price": {"$numberDouble": "100.0"},
                     "Exit_Type": "STOP LOSS",
-                    "Order_Status": "WORKING"
+                    "Order_Status": "WORKING",
+                    "Order_ID": {"$numberLong": "86753098675309"}
                 },
-                "order2": {
+                {
                     "Side": "SELL",
-                    "Exit_Price": 150.0,
+                    "Exit_Price": {"$numberDouble": "150.0"},
                     "Exit_Type": "TAKE PROFIT",
-                    "Order_Status": "PENDING"
+                    "Order_Status": "PENDING",
+                    "Order_ID": {"$numberLong": "1001859866918"}
                 }
-            }
+            ]
         }
 
         # Call the method
@@ -1174,7 +1176,7 @@ class TestApiTrader(unittest.TestCase):
                 {
                     "childOrderStrategies": [
                         {
-                            "Order_ID": "order1",
+                            "Order_ID": 86753098675309,
                             "orderLegCollection": [
                                 {"instruction": "BUY"}
                             ],
@@ -1188,14 +1190,15 @@ class TestApiTrader(unittest.TestCase):
 
         # Expected structure to be returned
         expected_output = {
-            "childOrderStrategies": {
-                "order1": {
+            "childOrderStrategies": [
+                {
                     "Side": "BUY",
-                    "Exit_Price": 200.0,
+                    "Exit_Price": {"$numberDouble": "200.0"},  # Updated to match BSON format
                     "Exit_Type": "TAKE PROFIT",
-                    "Order_Status": "FILLED"
+                    "Order_Status": "FILLED",
+                    "Order_ID": {"$numberLong": "86753098675309"}
                 }
-            }
+            ]
         }
 
         # Call the method
@@ -1220,7 +1223,7 @@ class TestApiTrader(unittest.TestCase):
                 {
                     "childOrderStrategies": [
                         {
-                            "Order_ID": "order1",
+                            "Order_ID": 86753098675309,
                             "orderLegCollection": [
                                 {"instruction": "SELL"}
                             ],
@@ -1234,14 +1237,15 @@ class TestApiTrader(unittest.TestCase):
 
         # Expected structure to be returned
         expected_output = {
-            "childOrderStrategies": {
-                "order1": {
+            "childOrderStrategies": [
+                {
                     "Side": "SELL",
                     "Exit_Price": None,  # Exit_Price should be None since neither stopPrice nor price exists
                     "Exit_Type": None,  # Exit_Type should be None as well
-                    "Order_Status": "WORKING"
+                    "Order_Status": "WORKING",
+                    "Order_ID": {"$numberLong": "86753098675309"}
                 }
-            }
+            ]
         }
 
         # Call the method
@@ -1269,14 +1273,15 @@ class TestApiTrader(unittest.TestCase):
         }
 
         expected_output = {
-            "childOrderStrategies": {
-                "Unknown_Order_ID": {
+            "childOrderStrategies": [
+                {
                     "Side": None,
                     "Exit_Price": None,
                     "Exit_Type": None,
-                    "Order_Status": None
+                    "Order_Status": None,
+                    "Order_ID": {"$numberLong": "None"}
                 }
-            }
+            ]
         }
 
         # Call the method and check if it returns an empty childOrderStrategies dict as expected
@@ -1304,14 +1309,15 @@ class TestApiTrader(unittest.TestCase):
         }
 
         expected_output = {
-            "childOrderStrategies": {
-                "Unknown_Order_ID": {
+            "childOrderStrategies": [
+                {
                     "Side": None,
                     "Exit_Price": None,
                     "Exit_Type": None,
-                    "Order_Status": None
+                    "Order_Status": None,
+                    "Order_ID": {"$numberLong": "None"}
                 }
-            }
+            ]
         }
 
         result = self.api_trader.extractOCOchildren(spec_order)
@@ -1339,18 +1345,20 @@ class TestApiTrader(unittest.TestCase):
         }
 
         expected_result = {
-            "childOrderStrategies": {
-                "54321": {
+            "childOrderStrategies": [
+                {
                     "Side": "SELL",
-                    "Exit_Price": 120.0,
+                    "Exit_Price": {"$numberDouble": "120.0"},  # Updated to match BSON format
                     "Exit_Type": "STOP LOSS",
-                    "Order_Status": "WORKING"
+                    "Order_Status": "WORKING",
+                    "Order_ID": {"$numberLong": "54321"}
                 }
-            }
+            ]
         }
 
         result = self.api_trader.extractOCOchildren(spec_order_no_nested_childOrderStrategies)
         self.assertEqual(result, expected_result)
+
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)
     def test_extractOCOchildren_handles_valid_nested_childOrderStrategies(self, mock_init):
@@ -1375,14 +1383,15 @@ class TestApiTrader(unittest.TestCase):
         }
 
         expected_result = {
-            "childOrderStrategies": {
-                "12345": {
+            "childOrderStrategies": [
+                {
                     "Side": "BUY",
-                    "Exit_Price": 100.0,
+                    "Exit_Price": {"$numberDouble": "100.0"},
                     "Exit_Type": "TAKE PROFIT",
-                    "Order_Status": "FILLED"
+                    "Order_Status": "FILLED",
+                    "Order_ID": {"$numberLong": "12345"}
                 }
-            }
+            ]
         }
 
         result = self.api_trader.extractOCOchildren(spec_order_valid_nested_childOrderStrategies)

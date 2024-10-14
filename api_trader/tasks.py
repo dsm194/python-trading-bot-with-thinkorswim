@@ -292,13 +292,12 @@ class Tasks:
 
     @exception_handler
     def extractOCOchildren(self, spec_order):
-        """This method extracts OCO children order ids and sends it to be stored in mongo open positions.
+        """This method extracts OCO children order ids and sends them to be stored in MongoDB open positions.
         Data will be used by checkOCOtriggers with order ids to see if stop loss or take profit has been triggered.
         """
 
-        oco_children = {
-            "childOrderStrategies": {}
-        }
+        # Initialize an empty list to store the child orders
+        oco_children = []
 
         # Retrieve the outer childOrderStrategies array, or an empty list if not present
         outer_child_order_strategies = spec_order.get("childOrderStrategies", [{}])
@@ -306,21 +305,26 @@ class Tasks:
         # Check if there's a nested childOrderStrategies array in the first object
         nested_child_order_strategies = outer_child_order_strategies[0].get("childOrderStrategies", outer_child_order_strategies)
 
-        # Now iterate over child_order_strategies (either the nested array or the outer array itself)
+        # Iterate over the nested_child_order_strategies (either the nested array or the outer array itself)
         for child in nested_child_order_strategies:
             # Safely retrieve keys, default to None if missing
             exit_price = child.get("stopPrice", child.get("activationPrice", child.get("price")))
             exit_type = "STOP LOSS" if "stopPrice" in child else "TAKE PROFIT"
 
-            # Ensure that exit_price exists, otherwise handle missing values
-            oco_children["childOrderStrategies"][str(child.get("Order_ID", "Unknown_Order_ID"))] = {
+            # Build the child order dictionary
+            child_order = {
                 "Side": child.get("orderLegCollection", [{}])[0].get("instruction"),
-                "Exit_Price": exit_price,
+                "Exit_Price": {"$numberDouble": str(exit_price)} if exit_price is not None else None,
                 "Exit_Type": exit_type if exit_price is not None else None,
-                "Order_Status": child.get("status")
+                "Order_Status": child.get("status"),
+                "Order_ID": {"$numberLong": str(child.get("Order_ID"))}
             }
 
-        return oco_children
+            # Add the child order to the list
+            oco_children.append(child_order)
+
+        # Return the list of child orders within the expected structure
+        return {"childOrderStrategies": oco_children}
 
 
     @exception_handler
