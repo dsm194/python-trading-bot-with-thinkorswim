@@ -306,7 +306,7 @@ class TDAmeritrade:
 
         # If the order ID is an integer and less than 0, assume it's a paper trade
         if numeric_id is not None and numeric_id < 0:
-            self.logger.info(f"Order ID {id} is a paper trade, no need to check status.")
+            # self.logger.info(f"Order ID {id} is a paper trade, no need to check status.")
             return {'message': 'Order not found'}
 
 
@@ -401,13 +401,12 @@ class TDAmeritrade:
                 # If no market is provided, get all the enum values as a list
                 if markets is None:
                     markets = [market for market in schwabBaseClient.MarketHours.Market]
-                    
+
                 # Use the current UTC datetime if no date is provided
                 if date is None:
                     date = getUTCDatetime()
 
-                dtNow_datetime = datetime.fromisoformat(date)                    
-                response = self.client.get_market_hours(markets=markets, date=dtNow_datetime)
+                response = self.client.get_market_hours(markets=markets, date=date)
 
                 # Check if the response status is not 200
                 if response.status_code != 200:

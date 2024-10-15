@@ -37,7 +37,7 @@ def getUTCDatetime():
 
     dt = datetime.now(tz=timezone.utc).replace(microsecond=0)
 
-    return dt.isoformat()
+    return dt  # Return datetime object instead of string
 
 def convertStringToDatetime(date_string, timezone = timezone.utc):
     return datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%S%z").astimezone(timezone)

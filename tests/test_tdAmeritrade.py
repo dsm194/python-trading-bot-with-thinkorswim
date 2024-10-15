@@ -559,9 +559,6 @@ class TestTDAmeritrade(unittest.TestCase):
         # Test case where the order is a paper trade (ID < 0)
         result = self.td_ameritrade.getSpecificOrder(id=-1)
 
-        # Ensure that the logger logs the paper trade info
-        self.td_ameritrade.logger.info.assert_called_once_with("Order ID -1 is a paper trade, no need to check status.")
-        
         # Assert that the method returns the 'Order not found' message
         self.assertEqual(result, {'message': 'Order not found'})
 

@@ -221,11 +221,15 @@ class Tasks:
         new_status = spec_order.get("status")
 
         if not new_status:
-            self.logger.warning(f"No status found for order_id: {order_id}")
+            if order_id > 0:
+                self.logger.warning(f"No status found for order_id: {order_id}")
             return
 
         # If the order is filled, process the position and stop further checks
         if new_status == "FILLED":
+            position["Direction"] = "CLOSE POSITION"
+            position["Side"] = child_order.get("Side", "SELL")
+
             self.pushOrder(position, spec_order)
             self.logger.info(f"Order {order_id} for {position['Symbol']} filled")
             return
@@ -311,13 +315,25 @@ class Tasks:
             exit_price = child.get("stopPrice", child.get("activationPrice", child.get("price")))
             exit_type = "STOP LOSS" if "stopPrice" in child else "TAKE PROFIT"
 
+            order_id = child.get("Order_ID")
+
+            # Check if Order_ID is present and numeric
+            if order_id is None:
+                self.logger.error(f"Missing Order_ID detected: {str(child)}")
+            else:
+                try:
+                    order_id = int(order_id)  # Try to convert to integer
+                except (ValueError, TypeError):
+                    self.logger.error(f"Invalid or non-numeric Order_ID detected: {str(child)}")
+                    order_id = None
+
             # Build the child order dictionary
             child_order = {
                 "Side": child.get("orderLegCollection", [{}])[0].get("instruction"),
-                "Exit_Price": {"$numberDouble": str(exit_price)} if exit_price is not None else None,
+                "Exit_Price": exit_price,
                 "Exit_Type": exit_type if exit_price is not None else None,
                 "Order_Status": child.get("status"),
-                "Order_ID": {"$numberLong": str(child.get("Order_ID"))}
+                "Order_ID": order_id
             }
 
             # Add the child order to the list

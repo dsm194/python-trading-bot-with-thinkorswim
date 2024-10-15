@@ -993,7 +993,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"Order_ID": "order1"}
+                            {"Order_ID": 12345}
                         ]
                     }
                 ]
@@ -1005,7 +1005,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"Order_ID": "order2"}
+                            {"Order_ID": 67890}
                         ]
                     }
                 ]
@@ -1017,7 +1017,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"Order_ID": "order3"}
+                            {"Order_ID": 13579}
                         ]
                     }
                 ]
@@ -1029,7 +1029,7 @@ class TestApiTrader(unittest.TestCase):
                 "childOrderStrategies": [
                     {
                         "childOrderStrategies": [
-                            {"Order_ID": "order4"}
+                            {"Order_ID": 24680}
                         ]
                     }
                 ]
@@ -1038,10 +1038,10 @@ class TestApiTrader(unittest.TestCase):
 
         # Mock getSpecificOrder for different orders
         self.api_trader.tdameritrade.getSpecificOrder.side_effect = [
-            {"status": "FILLED", "Order_ID": "order1"},
-            {"status": "CANCELED", "Order_ID": "order2"},
-            {"status": "REJECTED", "Order_ID": "order3"},
-            {"status": "WORKING", "Order_ID": "order4"},
+            {"status": "FILLED", "Order_ID": 12345},
+            {"status": "CANCELED", "Order_ID": 67890},
+            {"status": "REJECTED", "Order_ID": 13579},
+            {"status": "WORKING", "Order_ID": 24680},
         ]
 
         # Call the method under test
@@ -1053,9 +1053,11 @@ class TestApiTrader(unittest.TestCase):
                 "Symbol": "SYM1",
                 "Order_Type": "OCO",
                 "Strategy": "STRATEGY_A",
-                "childOrderStrategies": [{"childOrderStrategies": [{"Order_ID": "order1"}]}]
+                "childOrderStrategies": [{"childOrderStrategies": [{"Order_ID": 12345}]}],
+                "Direction": "CLOSE POSITION",
+                "Side": "SELL"
             },
-            {"status": "FILLED", "Order_ID": "order1"}
+            {"status": "FILLED", "Order_ID": 12345}
         )
 
         # Check logger info for CANCELED order
@@ -1069,7 +1071,7 @@ class TestApiTrader(unittest.TestCase):
                 {"Trader": self.api_trader.user["Name"], "Account_ID": self.api_trader.account_id, "Symbol": "SYM4", "Strategy": "STRATEGY_D"},
                 {'$set': {'childOrderStrategies.$[orderElem].Order_Status': 'WORKING'}},
                 False, None,
-                [{'orderElem.Order_ID': 'order4'}],  # The array filter for orderElem.Order_ID
+                [{'orderElem.Order_ID': 24680}],  # The array filter for orderElem.Order_ID
                 None
             )
         ])
@@ -1125,7 +1127,7 @@ class TestApiTrader(unittest.TestCase):
                             "status": "WORKING"
                         },
                         {
-                            "Order_ID": 1001859866918,
+                            "Order_ID": 86753098675310,
                             "orderLegCollection": [
                                 {"instruction": "SELL"}
                             ],
@@ -1142,17 +1144,17 @@ class TestApiTrader(unittest.TestCase):
             "childOrderStrategies": [
                 {
                     "Side": "SELL",
-                    "Exit_Price": {"$numberDouble": "100.0"},
+                    "Exit_Price": 100.0,
                     "Exit_Type": "STOP LOSS",
                     "Order_Status": "WORKING",
-                    "Order_ID": {"$numberLong": "86753098675309"}
+                    "Order_ID": 86753098675309
                 },
                 {
                     "Side": "SELL",
-                    "Exit_Price": {"$numberDouble": "150.0"},
+                    "Exit_Price": 150.0,
                     "Exit_Type": "TAKE PROFIT",
                     "Order_Status": "PENDING",
-                    "Order_ID": {"$numberLong": "1001859866918"}
+                    "Order_ID": 86753098675310
                 }
             ]
         }
@@ -1193,10 +1195,10 @@ class TestApiTrader(unittest.TestCase):
             "childOrderStrategies": [
                 {
                     "Side": "BUY",
-                    "Exit_Price": {"$numberDouble": "200.0"},  # Updated to match BSON format
+                    "Exit_Price": 200.0,
                     "Exit_Type": "TAKE PROFIT",
                     "Order_Status": "FILLED",
-                    "Order_ID": {"$numberLong": "86753098675309"}
+                    "Order_ID": 86753098675309
                 }
             ]
         }
@@ -1243,7 +1245,7 @@ class TestApiTrader(unittest.TestCase):
                     "Exit_Price": None,  # Exit_Price should be None since neither stopPrice nor price exists
                     "Exit_Type": None,  # Exit_Type should be None as well
                     "Order_Status": "WORKING",
-                    "Order_ID": {"$numberLong": "86753098675309"}
+                    "Order_ID": 86753098675309
                 }
             ]
         }
@@ -1279,7 +1281,7 @@ class TestApiTrader(unittest.TestCase):
                     "Exit_Price": None,
                     "Exit_Type": None,
                     "Order_Status": None,
-                    "Order_ID": {"$numberLong": "None"}
+                    "Order_ID": None
                 }
             ]
         }
@@ -1315,7 +1317,7 @@ class TestApiTrader(unittest.TestCase):
                     "Exit_Price": None,
                     "Exit_Type": None,
                     "Order_Status": None,
-                    "Order_ID": {"$numberLong": "None"}
+                    "Order_ID": None
                 }
             ]
         }
@@ -1348,10 +1350,10 @@ class TestApiTrader(unittest.TestCase):
             "childOrderStrategies": [
                 {
                     "Side": "SELL",
-                    "Exit_Price": {"$numberDouble": "120.0"},  # Updated to match BSON format
+                    "Exit_Price": 120.0,  # Updated to match BSON format
                     "Exit_Type": "STOP LOSS",
                     "Order_Status": "WORKING",
-                    "Order_ID": {"$numberLong": "54321"}
+                    "Order_ID": 54321
                 }
             ]
         }
@@ -1386,16 +1388,115 @@ class TestApiTrader(unittest.TestCase):
             "childOrderStrategies": [
                 {
                     "Side": "BUY",
-                    "Exit_Price": {"$numberDouble": "100.0"},
+                    "Exit_Price": 100.0,
                     "Exit_Type": "TAKE PROFIT",
                     "Order_Status": "FILLED",
-                    "Order_ID": {"$numberLong": "12345"}
+                    "Order_ID": 12345
                 }
             ]
         }
 
         result = self.api_trader.extractOCOchildren(spec_order_valid_nested_childOrderStrategies)
         self.assertEqual(result, expected_result)
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_numeric_order_ID(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        # Mocking a valid numeric order ID
+        spec_order = {
+            "childOrderStrategies": [
+                {
+                    "childOrderStrategies": [
+                        {
+                            "Order_ID": "1001870497109",  # Valid numeric string
+                            "orderLegCollection": [{"instruction": "BUY"}],
+                            "price": 200.0,
+                            "status": "FILLED"
+                        }
+                    ]
+                }
+            ]
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order)
+
+        # Assert that Order_ID is properly converted to an integer
+        self.assertEqual(result["childOrderStrategies"][0]["Order_ID"], 1001870497109)
+        self.api_trader.logger.error.assert_not_called()
+
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_non_numeric_order_ID(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        # Mocking an invalid non-numeric order ID
+        spec_order = {
+            "childOrderStrategies": [
+                {
+                    "childOrderStrategies": [
+                        {
+                            "Order_ID": "INVALID_ID",  # Non-numeric string
+                            "orderLegCollection": [{"instruction": "SELL"}],
+                            "price": 150.0,
+                            "status": "PENDING"
+                        }
+                    ]
+                }
+            ]
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order)
+
+        # Assert that Order_ID is None because it's not numeric
+        self.assertIsNone(result["childOrderStrategies"][0]["Order_ID"])
+
+        # Check that an error was logged for the invalid Order_ID
+        self.api_trader.logger.error.assert_called_once_with(f"Invalid or non-numeric Order_ID detected: {spec_order['childOrderStrategies'][0]['childOrderStrategies'][0]}")
+
+
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    def test_extractOCOchildren_missing_order_ID(self, mock_init):
+        # Initialize the ApiTrader instance
+        self.api_trader = ApiTrader()
+        # Mock dependencies
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
+        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
+
+        # Mocking a missing Order_ID
+        spec_order = {
+            "childOrderStrategies": [
+                {
+                    "childOrderStrategies": [
+                        {
+                            # No Order_ID present
+                            "orderLegCollection": [{"instruction": "SELL"}],
+                            "price": 150.0,
+                            "status": "PENDING"
+                        }
+                    ]
+                }
+            ]
+        }
+
+        result = self.api_trader.extractOCOchildren(spec_order)
+
+        # Assert that Order_ID is None because it's missing
+        self.assertIsNone(result["childOrderStrategies"][0]["Order_ID"])
+
+        # Check that an error was logged for the missing Order_ID
+        self.api_trader.logger.error.assert_called_once_with(f"Missing Order_ID detected: {spec_order['childOrderStrategies'][0]['childOrderStrategies'][0]}")
 
 
     @patch('api_trader.ApiTrader.sendOrder')  # Mock the order sending
