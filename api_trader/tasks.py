@@ -275,6 +275,7 @@ class Tasks:
                         "Strategy": position["Strategy"]
                     },
                     updates,
+                    upsert=False,
                     array_filters=array_filters
                 )
             )

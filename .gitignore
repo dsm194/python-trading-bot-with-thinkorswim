@@ -8,3 +8,4 @@ credentials.json
 *.log
 test.py
 oldrm.md
+.venv
