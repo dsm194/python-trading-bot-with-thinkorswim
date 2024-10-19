@@ -37,14 +37,19 @@ class Tasks:
 
         # Are we during market hours?
         dtNow = getUTCDatetime()
-        marketHours = self.tdameritrade.getMarketHours(date=dtNow)
 
+        # Caching market hours for a certain period
+        if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:  # Cache for 5 mins
+            self._cached_market_hours = self.tdameritrade.getMarketHours(date=dtNow)
+            self._cached_market_hours_timestamp = time.time()
+        marketHours = self._cached_market_hours
+        
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.open_positions.find({
             "Trader": self.user["Name"], 
             "Account_ID": self.account_id, 
             "Account_Position": "Paper", 
-            # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG"]}
+            # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG", "MACD_XVER_8_17_9_EXP_DEBUG"]}
         }))
 
         # Fetch all relevant strategies for the account in one query and store them in a dictionary
@@ -53,24 +58,22 @@ class Tasks:
 
         # Load exit strategies and store them in strategy_dict
         for strategy_name, strategy_data in strategy_dict.items():
-            strategy_object = OrderBuilderWrapper().load_strategy(strategy_data) # self.load_exit_strategy(strategy_data)
+            strategy_object = OrderBuilderWrapper().load_strategy(strategy_data)
             strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
 
+        # Group positions by symbol to minimize the number of API calls
         positions_by_symbol = {}
         for position in open_positions:
             symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
-            if symbol not in positions_by_symbol:
-                positions_by_symbol[symbol] = []
-            positions_by_symbol[symbol].append(position)
+            positions_by_symbol.setdefault(symbol, []).append(position)
 
-        # Process symbols in chunks of 250 (reduced batch size)
+        # Process symbols in batches
         symbols = list(positions_by_symbol.keys())
         batch_size = 250
         quotes = {}
-        for i in range(0, len(symbols), batch_size):
-            # Batch the symbols for API call
-            batch_symbols = symbols[i:i + batch_size]
 
+        for i in range(0, len(symbols), batch_size):
+            batch_symbols = symbols[i:i + batch_size]
             success = False
             retries = 3  # Number of retries if a timeout occurs
             backoff_time = 2  # Start with a 2-second delay
@@ -124,14 +127,11 @@ class Tasks:
 
                     exit_strategy = strategy_data["ExitStrategy"]
 
-                    # Safely check if 'EQ' exists in the marketHours structure and if the market is open
-                    equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours)
-                    equity_data = equity_data.get('EQ', equity_data)
-                    equity_data = equity_data.get(position["Asset_Type"].lower(), equity_data)
+                    # Check market hours from cached data
+                    equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours).get('EQ', {})
                     isMarketOpen = equity_data.get('isOpen', False)
 
-                    # price = float(quote["quote"]["askPrice"] if isMarketOpen else quote["regular"]["regularMarketLastPrice"])
-                    last_price = quote["quote"]["lastPrice"]
+                    last_price = quote["quote"]["lastPrice"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote["regular"]["regularMarketLastPrice"]
                     max_price = position.get("max_price", position["Entry_Price"])
 
                     # Prepare additional params if needed
@@ -146,9 +146,9 @@ class Tasks:
                     # Call the should_exit method to check for exit conditions
                     exit_result = exit_strategy.should_exit(additional_params)
                     should_exit = exit_result['exit']
+                    updated_max_price = exit_result["additional_params"]["max_price"]
                     
                     # Update max_price in MongoDB before sending any order
-                    updated_max_price = exit_result["additional_params"]["max_price"]
                     if updated_max_price != position.get("max_price"):
                         self.open_positions.update_one(
                             {"_id": position["_id"]},
