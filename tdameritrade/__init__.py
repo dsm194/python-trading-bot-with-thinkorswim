@@ -1,17 +1,17 @@
 # imports
+import asyncio
 from datetime import datetime, timedelta
-import urllib.parse as up
-import time
 import httpx
-import requests
+import websockets
 from assets.helper_functions import getUTCDatetime, modifiedAccountID
 from assets.exception_handler import exception_handler
-from schwab.auth import easy_client
+
 from schwab.auth import client_from_manual_flow
-from schwab.auth import client_from_login_flow
 from schwab.auth import client_from_token_file
 from schwab.client.base import BaseClient as schwabBaseClient
 from schwab.utils import Utils
+from schwab.streaming import StreamClient
+
 import os
 from dotenv import load_dotenv
 
@@ -46,6 +46,30 @@ class TDAmeritrade:
         self.invalid_count = 0
 
         self.client = {}
+
+        self.stream_client = {}
+
+        self.client_lock = asyncio.Lock()
+
+    async def connect_to_streaming(self):
+        try:
+            self.logger.info("Attempting to log in to the streaming service.")
+            # await asyncio.wait_for(self.stream_client.login(), timeout=5)
+            websocket_connect_args = {
+                "ping_interval": 20,
+            }
+            await self.stream_client.login(websocket_connect_args)
+            self.logger.info("Successfully logged in to the streaming service.")
+        except asyncio.TimeoutError:
+            self.logger.error("Login timed out.")
+            raise  # Rethrow or handle appropriately
+        except Exception as e:
+            self.logger.error(f"Failed to connect to streaming: {e}")
+            raise
+
+
+    async def disconnect_streaming(self):
+        await self.stream_client.logout()
 
     @exception_handler
     def initialConnect(self):
@@ -88,6 +112,7 @@ class TDAmeritrade:
 
         if c:
             self.client = c
+            self.stream_client = StreamClient(client=self.client)
 
             # ADD NEW TOKEN DATA TO USER DATA IN DB
             self.users.update_one({"Name": self.user["Name"]}, {
@@ -287,6 +312,78 @@ class TDAmeritrade:
                 return None
         else:
             return
+    
+    @exception_handler
+    async def subscribe_to_stream(self, symbols, quote_handler, add_handler = True):
+
+        await self._safe_connect_to_streaming()
+
+        # Add your subscription logic here
+        # Always add handlers before subscribing because many streams start sending
+        # data immediately after success, and messages with no handlers are dropped.
+        # await self.stream_client.level_one_equity_subs(symbols=symbols)
+        if add_handler:
+            self.stream_client.add_level_one_equity_handler(quote_handler)
+
+        await self.stream_client.level_one_equity_add(
+            symbols=symbols,
+            fields=[
+                StreamClient.LevelOneEquityFields.SYMBOL,
+                StreamClient.LevelOneEquityFields.BID_PRICE,
+                StreamClient.LevelOneEquityFields.ASK_PRICE,
+                StreamClient.LevelOneEquityFields.LAST_PRICE,
+                StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+            ]
+        )
+
+            
+    @exception_handler
+    async def receive_stream(self, quote_handler, max_retries=5):
+        retries = 0
+        while retries < max_retries:
+            try:
+                message = await self.stream_client.handle_message()
+                if message:
+                    quote_handler(message)
+                retries = 0
+
+            except websockets.exceptions.ConnectionClosedOK:
+                break
+
+            except websockets.ConnectionClosedError as e:
+                retries += 1
+                self.logger.warning(f"In receive_stream: WebSocket connection closed: {e}. Attempt {retries} of {max_retries}. Reconnecting...")
+                await self._safe_connect_to_streaming()                
+                await asyncio.sleep(1)
+
+            except ValueError as e:
+                self.logger.error(f"In receive_stream: Value error encountered: {e}. This will not count against retries.")
+                # You can choose to handle the ValueError here or log it and continue
+                await self._safe_connect_to_streaming()
+                await asyncio.sleep(1)
+
+            except Exception as e:
+                self.logger.error(f"In receive_stream: Unexpected error in receive_stream message handling: {e}")
+                break  # Exit if an unhandled error occurs
+
+        if retries == max_retries:
+            self.logger.error("In receive_stream: Max retries reached. Failed to reconnect.")
+
+
+    async def _safe_connect_to_streaming(self):
+        try:
+            # async with self.client_lock:
+            await self.connect_to_streaming()  # Lock only during connection attempts
+        except Exception as e:
+            self.logger.error(f"Failed to connect to streaming: {e}")
+
+    async def _safe_disconnect_streaming(self):
+        try:
+            async with self.client_lock:
+                await self.disconnect_streaming()  # Lock only during connection attempts
+        except Exception as e:
+            self.logger.error(f"Failed to disconnect to streaming: {e}")
+
 
     def getSpecificOrder(self, id):
         """ METHOD GETS A SPECIFIC ORDER INFO
