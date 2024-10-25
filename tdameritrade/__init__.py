@@ -51,26 +51,6 @@ class TDAmeritrade:
 
         self.client_lock = asyncio.Lock()
 
-    async def connect_to_streaming(self):
-        try:
-            self.logger.info("Attempting to log in to the streaming service.")
-            # await asyncio.wait_for(self.stream_client.login(), timeout=5)
-            websocket_connect_args = {
-                "ping_interval": 20,
-            }
-            await self.stream_client.login(websocket_connect_args)
-            self.logger.info("Successfully logged in to the streaming service.")
-        except asyncio.TimeoutError:
-            self.logger.error("Login timed out.")
-            raise  # Rethrow or handle appropriately
-        except Exception as e:
-            self.logger.error(f"Failed to connect to streaming: {e}")
-            raise
-
-
-    async def disconnect_streaming(self):
-        await self.stream_client.logout()
-
     @exception_handler
     def initialConnect(self):
 
@@ -314,16 +294,55 @@ class TDAmeritrade:
             return
     
     @exception_handler
-    async def subscribe_to_stream(self, symbols, quote_handler, add_handler = True):
+    async def start_stream(self, symbols, quote_handler, max_retries=5):
+        retries = 0
+        while retries < max_retries:
+            try:
+                # Step 1: Login
+                await self._safe_connect_to_streaming()
 
-        await self._safe_connect_to_streaming()
+                # Step 2: Subscribe to the stream
+                self.stream_client.add_level_one_equity_handler(quote_handler)
+                await self.stream_client.level_one_equity_add(
+                    symbols=symbols,
+                    fields=[
+                        StreamClient.LevelOneEquityFields.SYMBOL,
+                        StreamClient.LevelOneEquityFields.BID_PRICE,
+                        StreamClient.LevelOneEquityFields.ASK_PRICE,
+                        StreamClient.LevelOneEquityFields.LAST_PRICE,
+                        StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+                    ]
+                )
 
-        # Add your subscription logic here
-        # Always add handlers before subscribing because many streams start sending
-        # data immediately after success, and messages with no handlers are dropped.
-        # await self.stream_client.level_one_equity_subs(symbols=symbols)
-        if add_handler:
-            self.stream_client.add_level_one_equity_handler(quote_handler)
+                # Step 3: Receive stream in a loop
+                while True:
+                    await self.receive_stream(quote_handler)
+
+            except (websockets.exceptions.ConnectionClosedOK, websockets.ConnectionClosedError) as e:
+                retries += 1
+                self.logger.warning(f"Connection closed: {e}. Reconnecting attempt {retries}/{max_retries}")
+                await asyncio.sleep(2 ** retries)  # Exponential backoff
+            except ValueError as e:
+                self.logger.warning(f"Value error encountered: {e}. Reconnecting...")
+                await asyncio.sleep(1)
+            except Exception as e:
+                self.logger.error(f"Unexpected error: {e}")
+                break
+
+        if retries == max_retries:
+            self.logger.error("Max retries reached. Failed to reconnect.")
+
+
+    async def receive_stream(self, quote_handler):
+        message = await self.stream_client.handle_message()
+        if message:
+            quote_handler(message)
+
+
+    @exception_handler
+    async def update_subscription(self, symbols):
+
+        # await self._safe_connect_to_streaming()
 
         await self.stream_client.level_one_equity_add(
             symbols=symbols,
@@ -335,39 +354,6 @@ class TDAmeritrade:
                 StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
             ]
         )
-
-            
-    @exception_handler
-    async def receive_stream(self, quote_handler, max_retries=5):
-        retries = 0
-        while retries < max_retries:
-            try:
-                message = await self.stream_client.handle_message()
-                if message:
-                    quote_handler(message)
-                retries = 0
-
-            except websockets.exceptions.ConnectionClosedOK:
-                break
-
-            except websockets.ConnectionClosedError as e:
-                retries += 1
-                self.logger.warning(f"In receive_stream: WebSocket connection closed: {e}. Attempt {retries} of {max_retries}. Reconnecting...")
-                await self._safe_connect_to_streaming()                
-                await asyncio.sleep(1)
-
-            except ValueError as e:
-                self.logger.error(f"In receive_stream: Value error encountered: {e}. This will not count against retries.")
-                # You can choose to handle the ValueError here or log it and continue
-                await self._safe_connect_to_streaming()
-                await asyncio.sleep(1)
-
-            except Exception as e:
-                self.logger.error(f"In receive_stream: Unexpected error in receive_stream message handling: {e}")
-                break  # Exit if an unhandled error occurs
-
-        if retries == max_retries:
-            self.logger.error("In receive_stream: Max retries reached. Failed to reconnect.")
 
 
     async def _safe_connect_to_streaming(self):
@@ -383,6 +369,26 @@ class TDAmeritrade:
                 await self.disconnect_streaming()  # Lock only during connection attempts
         except Exception as e:
             self.logger.error(f"Failed to disconnect to streaming: {e}")
+
+    async def connect_to_streaming(self):
+        try:
+            self.logger.info("Attempting to log in to the streaming service.")
+            # await asyncio.wait_for(self.stream_client.login(), timeout=5)
+            websocket_connect_args = {
+                "ping_interval": 5,
+            }
+            await self.stream_client.login(websocket_connect_args)
+            self.logger.info("Successfully logged in to the streaming service.")
+        except asyncio.TimeoutError:
+            self.logger.error("Login timed out.")
+            raise  # Rethrow or handle appropriately
+        except Exception as e:
+            self.logger.error(f"Failed to connect to streaming: {e}")
+            raise
+
+
+    async def disconnect_streaming(self):
+        await self.stream_client.logout()
 
 
     def getSpecificOrder(self, id):

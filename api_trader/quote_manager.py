@@ -10,6 +10,8 @@ class QuoteManager:
         self.running = False
         self.callbacks = []  # Store callback functions for when quotes update
         self.subscribed_symbols = set()  # Track subscribed symbols
+        # Use a dictionary to track running callbacks per symbol
+        self.running_callbacks = {}
         self.lock = asyncio.Lock()
 
     # Define a handler for updating quotes as they stream
@@ -47,47 +49,58 @@ class QuoteManager:
 
     async def trigger_callbacks(self, symbol, quote):
         async with self.lock:
+            # Skip if callback for this symbol is already running
+            if self.running_callbacks.get(symbol):
+                return
+            self.running_callbacks[symbol] = True  # Mark as running
+
             callbacks = self.callbacks[:]  # Copy to avoid race conditions
-        for callback in callbacks:
-            if callback is not None:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(symbol, quote)
-                else:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, callback, symbol, quote)
 
-    @exception_handler
-    async def get_streaming_quotes(self, batch_symbols, add_handler=True):
-        # Subscription step, possibly setting up the connection
-        await self.tdameritrade.subscribe_to_stream(batch_symbols, self.quote_handler, add_handler)
-        
-        # Background task for continuously receiving the stream
-        asyncio.create_task(self.stream_quotes())
+        try:
+            for callback in callbacks:
+                if callback is not None:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(symbol, quote)
+                    else:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, callback, symbol, quote)
+        finally:
+            async with self.lock:
+                # Remove the symbol from running callbacks after execution completes
+                self.running_callbacks.pop(symbol, None)
+                
 
-    @exception_handler        
-    async def stream_quotes(self):
-        while self.running:
-            # Receiving and processing the stream
-            await self.tdameritrade.receive_stream(self.quote_handler)
+    async def start_quotes_stream(self, symbols):
+        if not self.running:
+            async with self.lock:
+                self.subscribed_symbols.update(symbols)  # Ensure subscribed symbols are set initially
+            self.running = True
+            await self.tdameritrade.start_stream(
+                self.subscribed_symbols, 
+                quote_handler=self.quote_handler, 
+                max_retries=5
+            )
+
+
+    async def update_stream_subscription(self, new_symbols):
+        # Add new symbols to the active stream
+        async with self.lock:
+            self.subscribed_symbols.update(new_symbols)  # Update subscribed symbols with new symbols
+        await self.tdameritrade.update_subscription(new_symbols)  # Adjust stream subscription
 
 
     async def add_quotes(self, symbols):
-        if self.running:
-            async with self.lock:
-                # Streaming is already running, just add the new symbols to the existing list
-                new_symbols = [s for s in symbols if s not in self.quotes and s not in self.subscribed_symbols]
-            
-            if new_symbols:
-                await self.get_streaming_quotes(new_symbols, False)
-                # Update the subscribed symbols set
-                async with self.lock:
-                    self.subscribed_symbols.update(new_symbols)
-        else:
-            # First time starting, subscribe to the initial batch
-            self.running = True
-            await self.get_streaming_quotes(symbols)
-            async with self.lock:
-                self.subscribed_symbols.update(symbols)  # Mark all initial symbols as subscribed
+        async with self.lock:
+            new_symbols = [s for s in symbols if s not in self.subscribed_symbols]
+
+        if new_symbols:
+            if self.running:
+                # Update the subscription if the stream is running
+                await self.update_stream_subscription(new_symbols)
+            else:
+                # Start the stream with all subscribed symbols
+                await self.start_quotes_stream(symbols)
+
 
     async def add_callback(self, callback):
         async with self.lock:
