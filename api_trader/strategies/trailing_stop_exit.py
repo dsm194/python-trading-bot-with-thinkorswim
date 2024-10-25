@@ -10,7 +10,10 @@ class TrailingStopExitStrategy(ExitStrategy):
 
     def should_exit(self, additional_params):
 
-        last_price = additional_params['last_price']
+        last_price = additional_params.get('last_price')
+        if last_price is None:
+            return {"exit": False, "reason": "last_price is None", "additional_params": additional_params}
+        
         entry_price = additional_params['entry_price']
         # Track the highest price observed so far (can be stored in additional_params or in the database)
         max_price = additional_params.get('max_price', entry_price)  # Start max_price at entry price

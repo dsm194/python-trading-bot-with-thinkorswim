@@ -10,7 +10,10 @@ class FixedPercentageExitStrategy(ExitStrategy):
 
     def should_exit(self, additional_params):
         
-        last_price = additional_params['last_price']
+        last_price = additional_params.get('last_price')
+        if last_price is None:
+            return {"exit": False, "reason": "last_price is None", "additional_params": additional_params}
+        
         entry_price = additional_params['entry_price']
         take_profit_percentage = self.strategy_settings.get("take_profit_percentage")
         stop_loss_percentage = self.strategy_settings.get("stop_loss_percentage")

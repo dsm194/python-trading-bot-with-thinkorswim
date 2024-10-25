@@ -38,6 +38,8 @@ class OrderBuilderWrapper:
         """
         self.mongo = mongo
 
+        super().__init__()
+
 
     def get_open_positions(self, user, account_id, strategy):
         """
