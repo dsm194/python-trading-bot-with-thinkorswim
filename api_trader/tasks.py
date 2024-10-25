@@ -1,12 +1,12 @@
 
 # imports
-import random
+import asyncio
+import threading
 import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-import httpx
 from api_trader.order_builder import OrderBuilderWrapper
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getUTCDatetime, selectSleep, modifiedAccountID
@@ -27,14 +27,34 @@ class Tasks:
     # YOU CAN CREATE WHATEVER TASKS YOU WANT FOR THE BOT.
     # YOU CAN USE THE DISCORD CHANNEL NAMED TASKS IF YOU ANY HELP.
 
-    def __init__(self):
+    def __init__(self, quoteManager):
 
-        self.isAlive = True
+        self.quote_manager = quoteManager
 
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(self.quote_manager.add_callback(self.evaluate_paper_triggers))
+        else:
+            loop.run_until_complete(self.quote_manager.add_callback(self.evaluate_paper_triggers))
 
+        self.stop_event = threading.Event()
+        self.tasks_running = False
+        self.positions_by_symbol = {}  # Class-level positions dictionary
+        self.strategy_dict = {}  # Class-level strategy dictionary
+        self.lock = threading.Lock()  # Lock for synchronizing access
+
+        super().__init__()
+
+    async def run_tasks_with_exit_check(self):
+        self.logger.info(
+            f"STARTING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})", extra={'log': False})
+
+        while not self.stop_event.is_set():
+            await self.runTasks()
+
+    
     @exception_handler
-    def checkOCOpapertriggers(self):
-
+    async def checkOCOpapertriggers(self):
         # Are we during market hours?
         dtNow = getUTCDatetime()
 
@@ -44,6 +64,8 @@ class Tasks:
             self._cached_market_hours_timestamp = time.time()
         marketHours = self._cached_market_hours
         
+        self.logger.info("Checking OCO paper triggers...")
+
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.open_positions.find({
             "Trader": self.user["Name"], 
@@ -52,121 +74,94 @@ class Tasks:
             # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG", "MACD_XVER_8_17_9_EXP_DEBUG"]}
         }))
 
-        # Fetch all relevant strategies for the account in one query and store them in a dictionary
-        strategies = self.strategies.find({"Account_ID": self.account_id})
-        strategy_dict = {strategy["Strategy"]: strategy for strategy in strategies}
-
-        # Load exit strategies and store them in strategy_dict
-        for strategy_name, strategy_data in strategy_dict.items():
-            strategy_object = OrderBuilderWrapper().load_strategy(strategy_data)
-            strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
-
         # Group positions by symbol to minimize the number of API calls
-        positions_by_symbol = {}
-        for position in open_positions:
-            symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
-            positions_by_symbol.setdefault(symbol, []).append(position)
+        with self.lock:  # Lock during modification
+            for position in open_positions:
+                symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
+                if symbol not in self.positions_by_symbol:
+                    self.positions_by_symbol[symbol] = []
+                # Ensure the position isn't already in the list
+                if position not in self.positions_by_symbol[symbol]:
+                    self.positions_by_symbol[symbol].append(position)
 
-        # Process symbols in batches
-        symbols = list(positions_by_symbol.keys())
-        batch_size = 250
-        quotes = {}
+            # Process symbols in batches
+            symbols = list(self.positions_by_symbol.keys())
+            batch_size = 250
+            # Filter out already subscribed symbols
+            new_symbols = [s for s in symbols if s not in self.quote_manager.subscribed_symbols]
 
-        for i in range(0, len(symbols), batch_size):
-            batch_symbols = symbols[i:i + batch_size]
-            success = False
-            retries = 3  # Number of retries if a timeout occurs
-            backoff_time = 2  # Start with a 2-second delay
+        # Fetch strategies from MongoDB and add any new strategies to the class-level dictionary
+        strategies = self.strategies.find({"Account_ID": self.account_id})
+        with self.lock:  # Lock during modification
+            for strategy in strategies:
+                strategy_name = strategy["Strategy"]
+                if strategy_name not in self.strategy_dict:
+                    strategy_object = OrderBuilderWrapper().load_strategy(strategy)
+                    self.strategy_dict[strategy_name] = strategy
+                    self.strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
 
-            while not success and retries > 0:
-                try:
-                    batch_quotes = self.tdameritrade.getQuotes(batch_symbols)
-                    quotes.update(batch_quotes)
-                    success = True
-                except httpx.ReadTimeout as e:
-                    retries -= 1
-                    self.logger.warning(f"Read operation timed out for batch {i//batch_size + 1}, retries left: {retries}, exception: {e}")
-                    if retries > 0:
-                        backoff_time *= 2  # Exponential backoff
-                        time.sleep(backoff_time + random.uniform(0, 1))  # Add a small random delay
-                        self.logger.info(f"Retrying after timeout with backoff of {backoff_time} seconds...")
-                    else:
-                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts due to ReadTimeout. Exception: {e}")
-                except httpx.ConnectTimeout as e:
-                    retries -= 1
-                    self.logger.warning(f"Connection timed out for batch {i//batch_size + 1}, retries left: {retries}, exception: {e}")
-                    if retries > 0:
-                        backoff_time *= 2  # Exponential backoff
-                        time.sleep(backoff_time + random.uniform(0, 1))
-                        self.logger.info(f"Retrying after connection timeout with backoff of {backoff_time} seconds...")
-                    else:
-                        self.logger.error(f"Failed to retrieve quotes for batch {i//batch_size + 1} after multiple attempts due to ConnectTimeout. Exception: {e}")
-                except Exception as e:
-                    self.logger.error(f"An unexpected error occurred: {e}")
-                    break  # If another type of exception occurs, break the loop and stop retrying
+        # Pass the symbols to the QuoteManager
+        if new_symbols:
+            await self.quote_manager.add_quotes(new_symbols)
 
-            # Skip processing if quotes retrieval fails for the current batch
-            if not success:
-                continue  # Skip this batch and move on to the next one if any
+    @exception_handler
+    def evaluate_paper_triggers(self, symbol, quote_data):
+            # Callback function invoked when quotes are updated
+            print(f"Evaluating paper triggers for {symbol}: {quote_data}")
+            # Your logic for evaluating triggers
 
-            for symbol in batch_symbols:
-                
-                quote = quotes.get(symbol)
+            with self.lock:  # Lock during modification
+                local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
 
-                if not quote or "askPrice" not in quote["quote"]:
-                    self.logger.error(f"Quote not found or invalid for symbol: {symbol}")
+            for position in local_positions_by_symbol:
+                strategy_name = position["Strategy"]
+                strategy_data = self.strategy_dict.get(strategy_name)
+
+                if not strategy_data or "ExitStrategy" not in strategy_data:
+                    self.logger.warning(f"Exit strategy not found for position: {position['_id']}")
                     continue
 
-                for position in positions_by_symbol[symbol]:
-                    strategy_name = position["Strategy"]
-                    strategy_data = strategy_dict.get(strategy_name)
+                exit_strategy = strategy_data["ExitStrategy"]
 
-                    if not strategy_data or "ExitStrategy" not in strategy_data:
-                        self.logger.warning(f"Exit strategy not found for position: {position['_id']}")
-                        continue
+                # # Check market hours from cached data
+                # equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours).get('EQ', {})
+                # isMarketOpen = equity_data.get('isOpen', False)
+                isMarketOpen = False
 
-                    exit_strategy = strategy_data["ExitStrategy"]
+                last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
+                max_price = position.get("max_price", position["Entry_Price"])
 
-                    # Check market hours from cached data
-                    equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours).get('EQ', {})
-                    isMarketOpen = equity_data.get('isOpen', False)
+                # Prepare additional params if needed
+                additional_params = {
+                    "entry_price": position["Entry_Price"],
+                    "quantity": position["Qty"],
+                    # Add any other necessary params here
+                    "last_price": last_price,
+                    "max_price": max_price,
+                }
 
-                    last_price = quote["quote"]["lastPrice"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote["regular"]["regularMarketLastPrice"]
-                    max_price = position.get("max_price", position["Entry_Price"])
+                # Call the should_exit method to check for exit conditions
+                exit_result = exit_strategy.should_exit(additional_params)
+                should_exit = exit_result['exit']
+                updated_max_price = exit_result["additional_params"]["max_price"]
 
-                    # Prepare additional params if needed
-                    additional_params = {
-                        "entry_price": position["Entry_Price"],
-                        "quantity": position["Qty"],
-                        # Add any other necessary params here
-                        "last_price": last_price,
-                        "max_price": max_price,
-                    }
+                # Update max_price in MongoDB before sending any order
+                if updated_max_price != position.get("max_price"):
+                    # self.open_positions.update_one(
+                    #     {"_id": position["_id"]},
+                    #     {"$set": {"max_price": updated_max_price}}
+                    # )
+                    self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
 
-                    # Call the should_exit method to check for exit conditions
-                    exit_result = exit_strategy.should_exit(additional_params)
-                    should_exit = exit_result['exit']
-                    updated_max_price = exit_result["additional_params"]["max_price"]
-                    
-                    # Update max_price in MongoDB before sending any order
-                    if updated_max_price != position.get("max_price"):
-                        self.open_positions.update_one(
-                            {"_id": position["_id"]},
-                            {"$set": {"max_price": updated_max_price}}
-                        )
-                        self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
+                if should_exit:
+                    # The exit conditions are met, so we need to close the position
+                    position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
+                    strategy_data["Order_Type"] = "STANDARD"
+                    # self.sendOrder(position, strategy_data, "CLOSE POSITION")
 
-                    if should_exit:
-                        # The exit conditions are met, so we need to close the position
-                        position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
-                        strategy_data["Order_Type"] = "STANDARD"
-                        self.sendOrder(position, strategy_data, "CLOSE POSITION")
-
-                    # Check for stop_signal.txt in each iteration
-                    if os.path.isfile(self.stop_signal_file):
-                        self.logger.info("Stop signal detected. Exiting checkOCOpapertriggers.")
-                        return
-
+    def stop(self):
+        self.stop_event.set()  # Signal the loop to stop
+        self.thread.join()  # Wait for the thread to finish
 
     @exception_handler
     def checkOCOtriggers(self):
@@ -370,37 +365,13 @@ class Tasks:
             upsert=True
         )
 
-    def runTasks(self):
+    async def runTasks(self):
         """ METHOD RUNS TASKS ON WHILE LOOP EVERY 5 - 60 SECONDS DEPENDING.
         """
 
         self.logger.info(
             f"STARTING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
-        while self.isAlive:
-
-            try:
-
-                # RUN TASKS ####################################################
-                
-                self.checkOCOtriggers()
-
-                self.checkOCOpapertriggers()
-
-                ##############################################################
-
-            except KeyError:
-
-                self.isAlive = False
-
-            except Exception as e:
-
-                self.logger.error(
-                    f"ACCOUNT ID: {modifiedAccountID(self.account_id)} - TRADER: {self.user['Name']} - {e}")
-
-            finally:
-
-                time.sleep(selectSleep())
-
-        self.logger.warning(
-            f"TASK STOPPED FOR ACCOUNT ID {modifiedAccountID(self.account_id)}")
+        await self.checkOCOpapertriggers()
+        
+        await asyncio.sleep(selectSleep())  # Allows other tasks to run while waiting.

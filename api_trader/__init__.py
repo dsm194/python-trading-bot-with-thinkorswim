@@ -1,6 +1,8 @@
+import asyncio
+import threading
+from api_trader.quote_manager import QuoteManager
 from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
-from threading import Thread
 from assets.exception_handler import exception_handler
 from api_trader.order_builder import OrderBuilderWrapper
 from dotenv import load_dotenv
@@ -53,17 +55,25 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.queue = mongo.queue
 
             self.no_ids_list = []
+            
+            quote_manager = QuoteManager(tdameritrade, logger)
+            self.quote_manager = quote_manager
 
             # Initialize parent classes
-            OrderBuilderWrapper.__init__(self, self.mongo)
-            Tasks.__init__(self)
+            Tasks.__init__(self, quote_manager)
+            OrderBuilderWrapper.__init__(self, mongo)
 
             # Path to the stop signal file
             self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
 
             if self.RUN_TASKS:
-                self.task_thread = Thread(target=self.run_tasks_with_exit_check, daemon=True)
-                self.task_thread.start()
+                self.loop = asyncio.new_event_loop()
+                # Start the event loop in a background thread
+                event_loop_thread = threading.Thread(target=self.start_event_loop_in_thread, daemon=True)
+                event_loop_thread.start()
+
+                # Use this new loop to schedule tasks
+                asyncio.run_coroutine_threadsafe(self.run_tasks_with_exit_check(), self.loop)
             else:
                 self.logger.info(
                     f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n",
@@ -77,13 +87,10 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
 
-    def run_tasks_with_exit_check(self):
-        """Run tasks and exit if stop_signal.txt is detected."""
-        while not self.check_stop_signal():
-            self.runTasks()
-            time.sleep(1)  # Sleep to avoid tight loop
-
-        self.logger.info(f"STOP SIGNAL DETECTED. TERMINATING TASK THREAD FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})")
+    def start_event_loop_in_thread(self):
+        # Create a new event loop for the background thread
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
 
     def check_stop_signal(self):
         """Check if the stop_signal.txt file exists."""
@@ -398,7 +405,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
 
         # UPDATE ALL ORDER STATUS'S
-        self.updateStatus()
+        # self.updateStatus()
 
         # UPDATE USER ATTRIBUTE
         self.user = self.mongo.users.find_one({"Name": self.user["Name"]})
