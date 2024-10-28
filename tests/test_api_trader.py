@@ -992,7 +992,6 @@ class TestApiTrader(unittest.TestCase):
 
         mock_open_positions.find.assert_called()
         mock_strategies.find.assert_called()
-        # self.api_trader.tdameritrade.getQuotes.assert_called()
         self.api_trader.quote_manager.add_quotes.assert_called()
 
         #TODO: implement new test to cover evaluate_paper_trigger
@@ -1022,7 +1021,6 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.RUN_LIVE_TRADER = True
         self.api_trader.open_positions = MagicMock()
         self.api_trader.strategies = MagicMock()
-        self.api_trader.quote_manager = MagicMock()
         self.api_trader.lock = threading.Lock()
         self.api_trader.positions_by_symbol = {}
         self.api_trader.strategy_dict = {}
@@ -1039,6 +1037,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies.find.return_value = mock_strategies
         
         # Mock add_quotes as async
+        self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.add_quotes = AsyncMock()
         
         await self.api_trader.checkOCOpapertriggers()
