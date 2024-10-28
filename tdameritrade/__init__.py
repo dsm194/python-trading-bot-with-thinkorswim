@@ -301,18 +301,36 @@ class TDAmeritrade:
                 # Step 1: Login
                 await self._safe_connect_to_streaming()
 
-                # Step 2: Subscribe to the stream
-                self.stream_client.add_level_one_equity_handler(quote_handler)
-                await self.stream_client.level_one_equity_add(
-                    symbols=symbols,
-                    fields=[
-                        StreamClient.LevelOneEquityFields.SYMBOL,
-                        StreamClient.LevelOneEquityFields.BID_PRICE,
-                        StreamClient.LevelOneEquityFields.ASK_PRICE,
-                        StreamClient.LevelOneEquityFields.LAST_PRICE,
-                        StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
-                    ]
-                )
+                # Step 2: Separate symbols by asset type
+                equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
+                option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
+
+                # Subscribe to equity symbols
+                if equity_symbols:
+                    self.stream_client.add_level_one_equity_handler(quote_handler)
+                    await self.stream_client.level_one_equity_add(
+                        symbols=equity_symbols,
+                        fields=[
+                            StreamClient.LevelOneEquityFields.SYMBOL,
+                            StreamClient.LevelOneEquityFields.BID_PRICE,
+                            StreamClient.LevelOneEquityFields.ASK_PRICE,
+                            StreamClient.LevelOneEquityFields.LAST_PRICE,
+                            StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+                        ]
+                    )
+
+                # Subscribe to option symbols
+                if option_symbols:
+                    self.stream_client.add_level_one_option_handler(quote_handler)
+                    await self.stream_client.level_one_option_add(
+                        symbols=option_symbols,
+                        fields=[
+                            StreamClient.LevelOneOptionFields.SYMBOL,
+                            StreamClient.LevelOneOptionFields.BID_PRICE,
+                            StreamClient.LevelOneOptionFields.ASK_PRICE,
+                            StreamClient.LevelOneOptionFields.LAST_PRICE,
+                        ]
+                    )
 
                 # Step 3: Receive stream in a loop
                 while True:
@@ -332,7 +350,6 @@ class TDAmeritrade:
         if retries == max_retries:
             self.logger.error("Max retries reached. Failed to reconnect.")
 
-
     async def receive_stream(self, quote_handler):
         message = await self.stream_client.handle_message()
         if message:
@@ -341,20 +358,34 @@ class TDAmeritrade:
 
     @exception_handler
     async def update_subscription(self, symbols):
+        # Separate symbols by asset type
+        equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
+        option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
 
-        # await self._safe_connect_to_streaming()
+        # Subscribe to equity symbols if any
+        if equity_symbols:
+            await self.stream_client.level_one_equity_add(
+                symbols=equity_symbols,
+                fields=[
+                    StreamClient.LevelOneEquityFields.SYMBOL,
+                    StreamClient.LevelOneEquityFields.BID_PRICE,
+                    StreamClient.LevelOneEquityFields.ASK_PRICE,
+                    StreamClient.LevelOneEquityFields.LAST_PRICE,
+                    StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+                ]
+            )
 
-        await self.stream_client.level_one_equity_add(
-            symbols=symbols,
-            fields=[
-                StreamClient.LevelOneEquityFields.SYMBOL,
-                StreamClient.LevelOneEquityFields.BID_PRICE,
-                StreamClient.LevelOneEquityFields.ASK_PRICE,
-                StreamClient.LevelOneEquityFields.LAST_PRICE,
-                StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
-            ]
-        )
-
+        # Subscribe to option symbols if any
+        if option_symbols:
+            await self.stream_client.level_one_option_add(
+                symbols=option_symbols,
+                fields=[
+                    StreamClient.LevelOneOptionFields.SYMBOL,
+                    StreamClient.LevelOneOptionFields.BID_PRICE,
+                    StreamClient.LevelOneOptionFields.ASK_PRICE,
+                    StreamClient.LevelOneOptionFields.LAST_PRICE,
+                ]
+            )
 
     async def _safe_connect_to_streaming(self):
         try:

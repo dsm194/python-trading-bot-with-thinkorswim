@@ -26,7 +26,8 @@ class QuoteManager:
             bid_price = quote.get('BID_PRICE')
             ask_price = quote.get('ASK_PRICE')
             last_price = quote.get('LAST_PRICE')
-            regular_market_last_price = quote.get('REGULAR_MARKET_LAST_PRICE')
+            regular_market_last_price = quote.get('REGULAR_MARKET_LAST_PRICE') or quote.get('LAST_PRICE')
+
     
             # Log or handle each quote as needed
             self.logger.info(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}")
@@ -45,9 +46,9 @@ class QuoteManager:
                 self.quotes[symbol] = merged_quote
 
             # Trigger all registered callbacks
-            await self.trigger_callbacks(symbol, merged_quote)
+            await self._trigger_callbacks(symbol, merged_quote)
 
-    async def trigger_callbacks(self, symbol, quote):
+    async def _trigger_callbacks(self, symbol, quote):
         async with self.lock:
             # Skip if callback for this symbol is already running
             if self.running_callbacks.get(symbol):
@@ -69,38 +70,43 @@ class QuoteManager:
                 # Remove the symbol from running callbacks after execution completes
                 self.running_callbacks.pop(symbol, None)
                 
-
-    async def start_quotes_stream(self, symbols):
+    async def _start_quotes_stream(self, symbols):
         if not self.running:
             async with self.lock:
-                self.subscribed_symbols.update(symbols)  # Ensure subscribed symbols are set initially
+                # Update subscribed symbols with the new structure
+                self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
+                # self.subscribed_symbols.update(entry["symbol"] for entry in symbols if isinstance(entry, dict))
+
             self.running = True
             await self.tdameritrade.start_stream(
-                self.subscribed_symbols, 
+                symbols,
                 quote_handler=self.quote_handler, 
                 max_retries=5
             )
 
-
-    async def update_stream_subscription(self, new_symbols):
+    async def _update_stream_subscription(self, new_symbols):
         # Add new symbols to the active stream
         async with self.lock:
-            self.subscribed_symbols.update(new_symbols)  # Update subscribed symbols with new symbols
-        await self.tdameritrade.update_subscription(new_symbols)  # Adjust stream subscription
+            # Update subscribed symbols with the new structure
+            for entry in new_symbols:
+                symbol = entry["symbol"]
+                self.subscribed_symbols.add(symbol)  # Assuming subscribed_symbols is a set
 
+        # Call the update_subscription method with the new structure
+        await self.tdameritrade.update_subscription(new_symbols)
 
     async def add_quotes(self, symbols):
         async with self.lock:
-            new_symbols = [s for s in symbols if s not in self.subscribed_symbols]
+            # Extract symbols and filter out already subscribed ones
+            new_symbols = [s for s in symbols if s["symbol"] not in self.subscribed_symbols]
 
         if new_symbols:
             if self.running:
-                # Update the subscription if the stream is running
-                await self.update_stream_subscription(new_symbols)
+                # Pass the new structure to the update function
+                await self._update_stream_subscription(new_symbols)
             else:
-                # Start the stream with all subscribed symbols
-                await self.start_quotes_stream(symbols)
-
+                # Pass the new structure to start the stream
+                await self._start_quotes_stream(new_symbols)
 
     async def add_callback(self, callback):
         async with self.lock:

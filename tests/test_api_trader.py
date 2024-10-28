@@ -1,9 +1,11 @@
+import asyncio
 import os
 import random
 import re
 import string
+import threading
 from unittest import mock
-from unittest.mock import PropertyMock, call, patch, MagicMock, ANY
+from unittest.mock import AsyncMock, PropertyMock, call, patch, MagicMock, ANY
 import unittest
 
 import httpx
@@ -741,14 +743,16 @@ class TestApiTrader(unittest.TestCase):
         # Verify that logger.error was called with the expected message
         self.logger.error.assert_called_once_with("Error initializing ApiTrader: Initialization Error with mongo.users")
 
+    # Run the test in unittest using asyncio.run()
+    def test_checkOCOpapertriggers_retry_logic_with_timeout(self):
+        asyncio.run(self.async_test_checkOCOpapertriggers_retry_logic_with_timeout())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.strategies.fixed_percentage_exit.FixedPercentageExitStrategy')  # Mocking ExitStrategy
-    def test_checkOCOpapertriggers_retry_logic_with_timeout(self, mock_exit_strategy, mock_init):
+    async def async_test_checkOCOpapertriggers_retry_logic_with_timeout(self, mock_exit_strategy, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
-        # Mock instance attributes
         # Mock instance attributes
         self.api_trader.logger = MagicMock()
         self.api_trader.mongo = MagicMock()
@@ -759,6 +763,9 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.tdameritrade = MagicMock()
         self.api_trader.stop_signal_file = "mock_stop_signal_file"  # Add this line to mock the stop_signal_file
         self.api_trader.RUN_LIVE_TRADER = True  # Mock or set RUN_LIVE_TRADER attribute
+        self.api_trader.lock = threading.Lock()
+        self.api_trader.positions_by_symbol = {}
+        self.api_trader.strategy_dict = {}
 
         # Mock open_positions
         num_positions = 1
@@ -793,7 +800,7 @@ class TestApiTrader(unittest.TestCase):
         mock_exit_strategy.return_value.should_exit.return_value = mock_exit_response
 
         # Run the method to test
-        self.api_trader.checkOCOpapertriggers()
+        await self.api_trader.checkOCOpapertriggers()
 
         # Assertions to ensure that getQuotes was called 3 times (2 failures, 1 success)
         self.assertEqual(self.api_trader.tdameritrade.getQuotes.call_count, 3)
@@ -829,10 +836,15 @@ class TestApiTrader(unittest.TestCase):
 
 
     def test_checkOCOpapertriggers_read_timeout(self):
+        asyncio.run(self.async_test_checkOCOpapertriggers_read_timeout())
+
+    async def async_test_checkOCOpapertriggers_read_timeout(self):
         """Test ReadTimeout scenario and cover the else block after retries."""
         
         # Simulate ReadTimeout on each call
         self.api_trader.tdameritrade.getQuotes.side_effect = httpx.ReadTimeout("Read operation timed out.")
+        self.api_trader.quote_manager = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
         
         # Mock open_positions
         num_positions = 1
@@ -846,7 +858,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies = mock_strategies
 
         # Call the method
-        self.api_trader.checkOCOpapertriggers()
+        await self.api_trader.checkOCOpapertriggers()
 
         # Assert logger warning was called after retries
         self.assertTrue(self.logger.warning.called)
@@ -855,7 +867,13 @@ class TestApiTrader(unittest.TestCase):
 
 
     def test_checkOCOpapertriggers_connect_timeout(self):
+        asyncio.run(self.async_test_checkOCOpapertriggers_connect_timeout())
+
+    async def async_test_checkOCOpapertriggers_connect_timeout(self):
         """Test ConnectTimeout scenario and cover the else block after retries."""
+        
+        self.api_trader.quote_manager = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
         
         # Simulate ConnectTimeout on each call
         self.api_trader.tdameritrade.getQuotes.side_effect = httpx.ConnectTimeout("Connection timed out.")
@@ -872,7 +890,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies = mock_strategies
         
         # Call the method
-        self.api_trader.checkOCOpapertriggers()
+        await self.api_trader.checkOCOpapertriggers()
 
         # Assert logger warning was called after retries
         self.assertTrue(self.logger.warning.called)
@@ -881,10 +899,15 @@ class TestApiTrader(unittest.TestCase):
 
 
     def test_checkOCOpapertriggers_general_exception(self):
+        asyncio.run(self.async_test_checkOCOpapertriggers_general_exception())
+
+    async def async_test_checkOCOpapertriggers_general_exception(self):
         """Test general Exception scenario and cover the except Exception block."""
         
         # Simulate a generic exception
         self.api_trader.tdameritrade.getQuotes.side_effect = Exception("An unexpected error occurred.")
+        self.api_trader.quote_manager = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
 
         # Mock open_positions
         num_positions = 1
@@ -898,16 +921,19 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies = mock_strategies
         
         # Call the method
-        self.api_trader.checkOCOpapertriggers()
+        await self.api_trader.checkOCOpapertriggers()
 
         # Assert logger error was called
         self.assertTrue(self.logger.error.called)
         self.assertIn('An unexpected error occurred', self.logger.error.call_args[0][0])
 
-
+    def test_checkOCOpapertriggers_with_large_data(self):
+        # Use asyncio.run to handle async calls in the unittest framework
+        asyncio.run(self.async_test_checkOCOpapertriggers_with_large_data())
+        
     @patch('api_trader.ApiTrader.__init__', return_value=None)
     @patch('api_trader.strategies.fixed_percentage_exit.FixedPercentageExitStrategy')  # Mocking ExitStrategy
-    def test_checkOCOpapertriggers_with_large_data(self, mock_exit_strategy, mock_init):
+    async def async_test_checkOCOpapertriggers_with_large_data(self, mock_exit_strategy, mock_init):
         self.api_trader = ApiTrader()
         
         # Mock instance attributes
@@ -920,6 +946,13 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.tdameritrade = MagicMock()
         self.api_trader.stop_signal_file = "mock_stop_signal_file"  # Add this line to mock the stop_signal_file
         self.api_trader.RUN_LIVE_TRADER = True  # Mock or set RUN_LIVE_TRADER attribute
+        self.api_trader.open_positions = MagicMock()
+        self.api_trader.strategies = MagicMock()
+        self.api_trader.quote_manager = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
+        self.api_trader.lock = threading.Lock()
+        self.api_trader.positions_by_symbol = {}
+        self.api_trader.strategy_dict = {}
 
         # Mock open_positions
         num_positions = 5000
@@ -950,9 +983,8 @@ class TestApiTrader(unittest.TestCase):
         }
         mock_exit_strategy.return_value.should_exit.return_value = mock_exit_response
 
-
         # Run the method to test
-        self.api_trader.checkOCOpapertriggers()
+        await self.api_trader.checkOCOpapertriggers()
 
         # Add assertions to validate behavior
         self.api_trader.logger.warning.assert_not_called()
@@ -960,11 +992,62 @@ class TestApiTrader(unittest.TestCase):
 
         mock_open_positions.find.assert_called()
         mock_strategies.find.assert_called()
-        self.api_trader.tdameritrade.getQuotes.assert_called()
+        # self.api_trader.tdameritrade.getQuotes.assert_called()
+        self.api_trader.quote_manager.add_quotes.assert_called()
 
-        mock_exit_strategy.return_value.should_exit.assert_called()  # Validate the method was called
-        self.assertTrue(mock_exit_strategy.return_value.should_exit.called, "should_exit should have been called")
-        self.assertEqual(mock_exit_strategy.return_value.should_exit.call_count, num_positions)
+        #TODO: implement new test to cover evaluate_paper_trigger
+        # mock_exit_strategy.return_value.should_exit.assert_called()  # Validate the method was called
+        # self.assertTrue(mock_exit_strategy.return_value.should_exit.called, "should_exit should have been called")
+        # self.assertEqual(mock_exit_strategy.return_value.should_exit.call_count, num_positions)
+
+    # Run the test in unittest using asyncio.run()
+    def test_async_checkOCOpapertriggers_with_streaming(self):
+        asyncio.run(self.async_test_checkOCOpapertriggers_with_streaming_quotes())
+        
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    @patch('api_trader.strategies.fixed_percentage_exit.FixedPercentageExitStrategy')
+    async def async_test_checkOCOpapertriggers_with_streaming_quotes(self, mock_exit_strategy, mock_init):
+        # Initialize ApiTrader without running __init__
+        self.api_trader = ApiTrader()
+
+        # Set up ApiTrader attributes and mocks
+        self.api_trader.logger = MagicMock()
+        self.api_trader.mongo = MagicMock()
+        self.api_trader.user = MagicMock()
+        self.api_trader.queue = MagicMock()
+        self.api_trader.rejected = MagicMock()
+        self.api_trader.account_id = "test_account"
+        self.api_trader.tdameritrade = MagicMock()
+        self.api_trader.stop_signal_file = "mock_stop_signal_file"
+        self.api_trader.RUN_LIVE_TRADER = True
+        self.api_trader.open_positions = MagicMock()
+        self.api_trader.strategies = MagicMock()
+        self.api_trader.quote_manager = MagicMock()
+        self.api_trader.lock = threading.Lock()
+        self.api_trader.positions_by_symbol = {}
+        self.api_trader.strategy_dict = {}
+        
+        # Mock getMarketHours to return open market hours
+        self.api_trader.tdameritrade.getMarketHours = MagicMock(return_value={"isOpen": True})
+        
+        # Mock open positions with a list of mock positions
+        mock_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
+        self.api_trader.open_positions.find.return_value = mock_positions
+        
+        # Mock strategies with a list of mock strategies
+        mock_strategies = [{"Strategy": "TestStrategy", "Account_ID": self.api_trader.account_id}]
+        self.api_trader.strategies.find.return_value = mock_strategies
+        
+        # Mock add_quotes as async
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
+        
+        await self.api_trader.checkOCOpapertriggers()
+
+        # Assertions to validate that methods were called as expected
+        self.api_trader.logger.info.assert_called_with("Checking OCO paper triggers...")
+        self.api_trader.open_positions.find.assert_called()
+        self.api_trader.strategies.find.assert_called()
+        self.api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "AAPL", "asset_type": "EQUITY"}])
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)
     @patch.object(ApiTrader, 'pushOrder', return_value=None)  # Mock pushOrder in ApiTrader

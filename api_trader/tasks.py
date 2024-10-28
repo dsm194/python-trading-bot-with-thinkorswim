@@ -31,12 +31,6 @@ class Tasks:
 
         self.quote_manager = quoteManager
 
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(self.quote_manager.add_callback(self.evaluate_paper_triggers))
-        else:
-            loop.run_until_complete(self.quote_manager.add_callback(self.evaluate_paper_triggers))
-
         self.stop_event = threading.Event()
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
@@ -66,6 +60,8 @@ class Tasks:
         
         self.logger.info("Checking OCO paper triggers...")
 
+        await self.quote_manager.add_callback(self.evaluate_paper_triggers)
+
         # Fetch all open positions for the trader and the paper account in one query
         open_positions = list(self.open_positions.find({
             "Trader": self.user["Name"], 
@@ -74,25 +70,23 @@ class Tasks:
             # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG", "MACD_XVER_8_17_9_EXP_DEBUG"]}
         }))
 
-        # Group positions by symbol to minimize the number of API calls
-        with self.lock:  # Lock during modification
-            for position in open_positions:
-                symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
-                if symbol not in self.positions_by_symbol:
-                    self.positions_by_symbol[symbol] = []
-                # Ensure the position isn't already in the list
-                if position not in self.positions_by_symbol[symbol]:
-                    self.positions_by_symbol[symbol].append(position)
-
-            # Process symbols in batches
-            symbols = list(self.positions_by_symbol.keys())
-            batch_size = 250
-            # Filter out already subscribed symbols
-            new_symbols = [s for s in symbols if s not in self.quote_manager.subscribed_symbols]
-
         # Fetch strategies from MongoDB and add any new strategies to the class-level dictionary
         strategies = self.strategies.find({"Account_ID": self.account_id})
+
+        # Group positions by symbol to minimize the number of API calls
         with self.lock:  # Lock during modification
+            # Create a mapping for new symbols with asset types
+            new_symbols = []
+            for position in open_positions:
+                symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
+                # Check if the symbol is not already subscribed
+                if symbol not in self.quote_manager.subscribed_symbols:
+                    new_symbols.append({"symbol": symbol, "asset_type": position["Asset_Type"]})
+
+            # Optionally deduplicate new_symbols if necessary
+            seen = set()
+            new_symbols = [ns for ns in new_symbols if (ns["symbol"] not in seen and not seen.add(ns["symbol"]))]
+
             for strategy in strategies:
                 strategy_name = strategy["Strategy"]
                 if strategy_name not in self.strategy_dict:
@@ -105,7 +99,7 @@ class Tasks:
             await self.quote_manager.add_quotes(new_symbols)
 
     @exception_handler
-    def evaluate_paper_triggers(self, symbol, quote_data):
+    async def evaluate_paper_triggers(self, symbol, quote_data):
             # Callback function invoked when quotes are updated
             print(f"Evaluating paper triggers for {symbol}: {quote_data}")
             # Your logic for evaluating triggers
@@ -369,9 +363,13 @@ class Tasks:
         """ METHOD RUNS TASKS ON WHILE LOOP EVERY 5 - 60 SECONDS DEPENDING.
         """
 
-        self.logger.info(
-            f"STARTING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})", extra={'log': False})
+        # RUN TASKS ####################################################
+                
+        # Run synchronous method in a separate thread
+        await asyncio.to_thread(self.checkOCOtriggers)
 
         await self.checkOCOpapertriggers()
+
+        ##############################################################
         
         await asyncio.sleep(selectSleep())  # Allows other tasks to run while waiting.
