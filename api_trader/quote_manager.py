@@ -1,5 +1,6 @@
 
 import asyncio
+import threading
 from assets.exception_handler import exception_handler
 
 class QuoteManager:
@@ -7,12 +8,13 @@ class QuoteManager:
         self.tdameritrade = tdameritrade
         self.quotes = {}  # Store quotes here
         self.logger = logger
-        self.running = False
+        self.is_streaming = False
         self.callbacks = []  # Store callback functions for when quotes update
         self.subscribed_symbols = set()  # Track subscribed symbols
         # Use a dictionary to track running callbacks per symbol
         self.running_callbacks = {}
         self.lock = asyncio.Lock()
+        self.stop_event = threading.Event()
 
     # Define a handler for updating quotes as they stream
     async def quote_handler(self, quotes):
@@ -30,7 +32,7 @@ class QuoteManager:
 
     
             # Log or handle each quote as needed
-            self.logger.info(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}")
+            self.logger.info(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}, Last Price: {last_price}, Regular Market Last Price: {regular_market_last_price}")
 
             # Store the quotes in a dictionary
             async with self.lock:
@@ -71,17 +73,18 @@ class QuoteManager:
                 self.running_callbacks.pop(symbol, None)
                 
     async def _start_quotes_stream(self, symbols):
-        if not self.running:
+        if not self.is_streaming:
             async with self.lock:
                 # Update subscribed symbols with the new structure
                 self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
                 # self.subscribed_symbols.update(entry["symbol"] for entry in symbols if isinstance(entry, dict))
 
-            self.running = True
+            self.is_streaming = True
             await self.tdameritrade.start_stream(
                 symbols,
                 quote_handler=self.quote_handler, 
-                max_retries=5
+                max_retries=5,
+                stop_event = self.stop_event
             )
 
     async def _update_stream_subscription(self, new_symbols):
@@ -101,7 +104,7 @@ class QuoteManager:
             new_symbols = [s for s in symbols if s["symbol"] not in self.subscribed_symbols]
 
         if new_symbols:
-            if self.running:
+            if self.is_streaming:
                 # Pass the new structure to the update function
                 await self._update_stream_subscription(new_symbols)
             else:
@@ -115,6 +118,7 @@ class QuoteManager:
                 self.callbacks.append(callback)
 
     async def stop_streaming(self):
-        if self.running:
-            await self.tdameritrade.disconnect_streaming()  # Disconnect WebSocket
-            self.running = False
+        if self.is_streaming:
+            # await self.tdameritrade.disconnect_streaming()  # Disconnect WebSocket
+            self.is_streaming = False
+            self.stop_event.set()

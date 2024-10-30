@@ -49,7 +49,9 @@ class TDAmeritrade:
 
         self.stream_client = {}
 
-        self.client_lock = asyncio.Lock()
+        self.lock = asyncio.Lock()
+
+        self.registered_handlers = {"equity": set(), "option": set()}
 
     @exception_handler
     def initialConnect(self):
@@ -294,12 +296,13 @@ class TDAmeritrade:
             return
     
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None):
         retries = 0
-        while retries < max_retries:
+        while not (stop_event and stop_event.is_set()):
             try:
                 # Step 1: Login
                 await self._safe_connect_to_streaming()
+                retries = 0  # Reset retries on successful connection
 
                 # Step 2: Separate symbols by asset type
                 equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
@@ -307,7 +310,11 @@ class TDAmeritrade:
 
                 # Subscribe to equity symbols
                 if equity_symbols:
-                    self.stream_client.add_level_one_equity_handler(quote_handler)
+                    async with self.lock:
+                        if quote_handler not in self.registered_handlers["equity"]:
+                            self.stream_client.add_level_one_equity_handler(quote_handler)
+                            self.registered_handlers["equity"].add(quote_handler)
+
                     await self.stream_client.level_one_equity_add(
                         symbols=equity_symbols,
                         fields=[
@@ -321,7 +328,11 @@ class TDAmeritrade:
 
                 # Subscribe to option symbols
                 if option_symbols:
-                    self.stream_client.add_level_one_option_handler(quote_handler)
+                    async with self.lock:
+                        if quote_handler not in self.registered_handlers["option"]:
+                            self.stream_client.add_level_one_option_handler(quote_handler)
+                            self.registered_handlers["option"].add(quote_handler)
+
                     await self.stream_client.level_one_option_add(
                         symbols=option_symbols,
                         fields=[
@@ -333,22 +344,22 @@ class TDAmeritrade:
                     )
 
                 # Step 3: Receive stream in a loop
-                while True:
-                    await self.receive_stream(quote_handler)
+                while not (stop_event and stop_event.is_set()):
+                    await self.stream_client.handle_message()
 
             except (websockets.exceptions.ConnectionClosedOK, websockets.ConnectionClosedError) as e:
                 retries += 1
-                self.logger.warning(f"Connection closed: {e}. Reconnecting attempt {retries}/{max_retries}")
+                if retries >= max_retries:
+                    self.logger.error("Max retries reached. Continuing to retry indefinitely...")
                 await asyncio.sleep(2 ** retries)  # Exponential backoff
             except ValueError as e:
                 self.logger.warning(f"Value error encountered: {e}. Reconnecting...")
                 await asyncio.sleep(1)
             except Exception as e:
                 self.logger.error(f"Unexpected error: {e}")
-                break
+                await asyncio.sleep(2 ** retries)  # Exponential backoff
 
-        if retries == max_retries:
-            self.logger.error("Max retries reached. Failed to reconnect.")
+        self.logger.info("Streaming canceled.")
 
     async def receive_stream(self, quote_handler):
         message = await self.stream_client.handle_message()
@@ -396,8 +407,8 @@ class TDAmeritrade:
 
     async def _safe_disconnect_streaming(self):
         try:
-            async with self.client_lock:
-                await self.disconnect_streaming()  # Lock only during connection attempts
+            # async with self.client_lock:
+            await self.disconnect_streaming()  # Lock only during connection attempts
         except Exception as e:
             self.logger.error(f"Failed to disconnect to streaming: {e}")
 
@@ -419,7 +430,11 @@ class TDAmeritrade:
 
 
     async def disconnect_streaming(self):
-        await self.stream_client.logout()
+        try:
+            await self.stream_client.logout()
+            self.logger.info("Successfully logged out of the streaming service.")
+        except Exception as e:
+            self.logger.warning(f"Suppressed exception during logout: {e}")
 
 
     def getSpecificOrder(self, id):

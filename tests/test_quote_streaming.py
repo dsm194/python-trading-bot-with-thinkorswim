@@ -44,7 +44,7 @@ class TestQuoteStreaming(unittest.IsolatedAsyncioTestCase):
         self.quote_manager.tdameritrade.start_stream = self.simulate_mock_stream
         
 
-    async def simulate_mock_stream(self, symbols, quote_handler, max_retries=5, iterations=100, error_chance=0.05):
+    async def simulate_mock_stream(self, symbols, quote_handler, max_retries=5, iterations=100, error_chance=0.05, stop_event=None):
         """Simulate streaming quotes and randomly raise disconnection errors."""
         for _ in range(iterations):
 

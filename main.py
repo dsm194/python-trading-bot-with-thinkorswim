@@ -1,4 +1,5 @@
 # imports
+import asyncio
 import time
 import logging
 import os
@@ -112,15 +113,20 @@ class Main:
         for api_trader in self.traders.values():
             api_trader.runTrader(trade_data)
 
+
     def stop(self):
         """ Checks for the stop signal file to stop the running loop gracefully. """
         if os.path.isfile(self.stop_signal_file):
             self.logger.info("Stopping...")
             self.running = False
-            # Remove the stop signal file to reset for the next run
-            os.remove(self.stop_signal_file)
+
+            for api_trader in self.traders.values():
+                asyncio.run(api_trader.stop_trader())  # Run each async stop_trader method in its own event loop
+
+            os.remove(self.stop_signal_file)  # Remove stop signal file
         else:
             time.sleep(selectSleep())
+
 
 
 if __name__ == "__main__":

@@ -69,8 +69,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             if self.RUN_TASKS:
                 self.loop = asyncio.new_event_loop()
                 # Start the event loop in a background thread
-                event_loop_thread = threading.Thread(target=self.start_event_loop_in_thread, daemon=True)
-                event_loop_thread.start()
+                self.task_thread = threading.Thread(target=self.start_event_loop_in_thread, daemon=True)
+                self.task_thread.start()
 
                 # Use this new loop to schedule tasks
                 asyncio.run_coroutine_threadsafe(self.run_tasks_with_exit_check(), self.loop)
@@ -92,9 +92,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def check_stop_signal(self):
-        """Check if the stop_signal.txt file exists."""
-        return os.path.isfile(self.stop_signal_file)
+    async def stop_trader(self):
+        await self.quote_manager.stop_streaming()
 
     # STEP ONE
     @exception_handler
@@ -405,7 +404,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
 
         # UPDATE ALL ORDER STATUS'S
-        # self.updateStatus()
+        self.updateStatus()
 
         # UPDATE USER ATTRIBUTE
         self.user = self.mongo.users.find_one({"Name": self.user["Name"]})

@@ -31,11 +31,12 @@ class Tasks:
 
         self.quote_manager = quoteManager
 
-        self.stop_event = threading.Event()
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
         self.strategy_dict = {}  # Class-level strategy dictionary
         self.lock = threading.Lock()  # Lock for synchronizing access
+        self._cached_market_hours = {}
+        self._cached_market_hours_timestamp = 0
 
         super().__init__()
 
@@ -43,7 +44,7 @@ class Tasks:
         self.logger.info(
             f"STARTING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
-        while not self.stop_event.is_set():
+        while not self.quote_manager.stop_event.is_set():
             await self.runTasks()
 
     
@@ -56,9 +57,6 @@ class Tasks:
         if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:  # Cache for 5 mins
             self._cached_market_hours = self.tdameritrade.getMarketHours(date=dtNow)
             self._cached_market_hours_timestamp = time.time()
-        marketHours = self._cached_market_hours
-        
-        self.logger.info("Checking OCO paper triggers...")
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
 
@@ -80,8 +78,12 @@ class Tasks:
             for position in open_positions:
                 symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
                 # Check if the symbol is not already subscribed
-                if symbol not in self.quote_manager.subscribed_symbols:
+                if symbol not in self.positions_by_symbol:
+                    self.positions_by_symbol[symbol] = []
                     new_symbols.append({"symbol": symbol, "asset_type": position["Asset_Type"]})
+                # Ensure the position isn't already in the list
+                if position not in self.positions_by_symbol[symbol]:
+                    self.positions_by_symbol[symbol].append(position)
 
             # Optionally deduplicate new_symbols if necessary
             seen = set()
@@ -101,8 +103,7 @@ class Tasks:
     @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
             # Callback function invoked when quotes are updated
-            print(f"Evaluating paper triggers for {symbol}: {quote_data}")
-            # Your logic for evaluating triggers
+            # print(f"Evaluating paper triggers for {symbol}: {quote_data}")
 
             with self.lock:  # Lock during modification
                 local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
@@ -117,10 +118,9 @@ class Tasks:
 
                 exit_strategy = strategy_data["ExitStrategy"]
 
-                # # Check market hours from cached data
-                # equity_data = marketHours.get(position["Asset_Type"].lower(), marketHours).get('EQ', {})
-                # isMarketOpen = equity_data.get('isOpen', False)
-                isMarketOpen = False
+                # Check market hours from cached data
+                marketHours = self._cached_market_hours or {}
+                isMarketOpen = marketHours.get('isOpen', False)
 
                 last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
                 max_price = position.get("max_price", position["Entry_Price"])
@@ -129,7 +129,6 @@ class Tasks:
                 additional_params = {
                     "entry_price": position["Entry_Price"],
                     "quantity": position["Qty"],
-                    # Add any other necessary params here
                     "last_price": last_price,
                     "max_price": max_price,
                 }
@@ -141,20 +140,20 @@ class Tasks:
 
                 # Update max_price in MongoDB before sending any order
                 if updated_max_price != position.get("max_price"):
-                    # self.open_positions.update_one(
-                    #     {"_id": position["_id"]},
-                    #     {"$set": {"max_price": updated_max_price}}
-                    # )
+                    self.open_positions.update_one(
+                        {"_id": position["_id"]},
+                        {"$set": {"max_price": updated_max_price}}
+                    )
                     self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
 
                 if should_exit:
                     # The exit conditions are met, so we need to close the position
                     position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                     strategy_data["Order_Type"] = "STANDARD"
-                    # self.sendOrder(position, strategy_data, "CLOSE POSITION")
+                    self.sendOrder(position, strategy_data, "CLOSE POSITION")
 
     def stop(self):
-        self.stop_event.set()  # Signal the loop to stop
+        self.quote_manager.stop_event.set()  # Signal the loop to stop
         self.thread.join()  # Wait for the thread to finish
 
     @exception_handler
