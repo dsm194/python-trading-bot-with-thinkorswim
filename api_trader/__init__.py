@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from api_trader.position_updater import PositionUpdater
 from api_trader.quote_manager import QuoteManager
 from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
@@ -56,11 +57,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             self.no_ids_list = []
             
-            quote_manager = QuoteManager(tdameritrade, logger)
-            self.quote_manager = quote_manager
+            self.quote_manager = QuoteManager(tdameritrade, logger)
+            self.position_updater = PositionUpdater(self.open_positions, self.logger)
 
             # Initialize parent classes
-            Tasks.__init__(self, quote_manager)
+            Tasks.__init__(self, self.quote_manager, self.position_updater)
             OrderBuilderWrapper.__init__(self, mongo)
 
             # Path to the stop signal file
@@ -74,6 +75,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
                 # Use this new loop to schedule tasks
                 asyncio.run_coroutine_threadsafe(self.run_tasks_with_exit_check(), self.loop)
+                asyncio.run_coroutine_threadsafe(self.position_updater.schedule_batch_update(), self.loop)
             else:
                 self.logger.info(
                     f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n",
@@ -94,6 +96,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
     async def stop_trader(self):
         await self.quote_manager.stop_streaming()
+        await self.position_updater.stop()
 
     # STEP ONE
     @exception_handler

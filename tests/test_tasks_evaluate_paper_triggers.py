@@ -8,10 +8,14 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Mocking the quote manager and passing it to Tasks
         quote_manager = MagicMock()
-        self.tasks = Tasks(quote_manager)
+        position_updater = AsyncMock()
+        self.tasks = Tasks(quote_manager, position_updater)
+        self.tasks.user = {"Name": "Test User"}
+        self.tasks.account_id = "test_account_id"
 
         # Mock dependencies within Tasks
         self.tasks.open_positions = MagicMock()
+        self.tasks.position_updater.queue_max_price_update = AsyncMock()
         self.tasks.sendOrder = MagicMock()
         self.tasks.logger = MagicMock()
         self.tasks.strategy_dict = {
@@ -37,6 +41,8 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     async def test_evaluate_paper_triggers_retrieves_correct_strategy(self):
         # Mock quote data
         quote_data = {"last_price": 130, "regular_market_last_price": 125}
+        exit_result = MagicMock()
+        exit_result["additional_params"] = {"max_price": 150.0}
 
         # Test call
         await self.tasks.evaluate_paper_triggers("SYM1", quote_data)
@@ -128,10 +134,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         await self.tasks.evaluate_paper_triggers("SYM1", {"last_price": 130, "regular_market_last_price": 125})
 
         # Assert max_price is updated in database
-        self.tasks.open_positions.update_one.assert_called_once_with(
-            {"_id": "position_id_1"},
-            {"$set": {"max_price": 135.0}}
-        )
+        self.tasks.position_updater.queue_max_price_update.assert_called_once_with("position_id_1", 135.0)
 
     async def test_evaluate_paper_triggers_triggers_exit(self):
         # Mock should_exit to indicate exit

@@ -27,9 +27,10 @@ class Tasks:
     # YOU CAN CREATE WHATEVER TASKS YOU WANT FOR THE BOT.
     # YOU CAN USE THE DISCORD CHANNEL NAMED TASKS IF YOU ANY HELP.
 
-    def __init__(self, quoteManager):
+    def __init__(self, quote_manager, position_updater):
 
-        self.quote_manager = quoteManager
+        self.quote_manager = quote_manager
+        self.position_updater = position_updater
 
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
@@ -138,12 +139,11 @@ class Tasks:
                 should_exit = exit_result['exit']
                 updated_max_price = exit_result["additional_params"]["max_price"]
 
-                # Update max_price in MongoDB before sending any order
-                if updated_max_price != position.get("max_price"):
-                    self.open_positions.update_one(
-                        {"_id": position["_id"]},
-                        {"$set": {"max_price": updated_max_price}}
-                    )
+                # Update max_price in MongoDB only if updated_max_price is greater than the existing max_price or if max_price is None
+                current_max_price = position.get("max_price")
+
+                if current_max_price is None or updated_max_price > current_max_price:
+                    await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
                     self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
 
                 if should_exit:
@@ -154,6 +154,7 @@ class Tasks:
 
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop
+        self.position_updater.stop()
         self.thread.join()  # Wait for the thread to finish
 
     @exception_handler
