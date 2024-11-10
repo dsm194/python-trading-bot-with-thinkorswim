@@ -124,7 +124,7 @@ class Tasks:
                 isMarketOpen = marketHours.get('isOpen', False)
 
                 last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
-                max_price = position.get("max_price", position["Entry_Price"])
+                max_price = position.get("Max_Price", position["Entry_Price"])
 
                 # Prepare additional params if needed
                 additional_params = {
@@ -140,11 +140,12 @@ class Tasks:
                 updated_max_price = exit_result["additional_params"]["max_price"]
 
                 # Update max_price in MongoDB only if updated_max_price is greater than the existing max_price or if max_price is None
-                current_max_price = position.get("max_price")
+                current_max_price = position.get("Max_Price")
 
                 if current_max_price is None or updated_max_price > current_max_price:
                     await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
                     self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
+                    position["Max_Price"] = updated_max_price
 
                 if should_exit:
                     # The exit conditions are met, so we need to close the position

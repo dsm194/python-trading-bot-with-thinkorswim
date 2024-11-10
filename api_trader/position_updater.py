@@ -26,7 +26,7 @@ class PositionUpdater:
     async def queue_max_price_update(self, position_id, max_price):
         """Queues an update to max_price for a position."""
         async with self.lock:
-            self.price_updates[position_id] = {"max_price": max_price}
+            self.price_updates[position_id] = {"Max_Price": max_price}
 
     async def flush_updates(self):
         """Writes all queued updates to MongoDB in a batch."""

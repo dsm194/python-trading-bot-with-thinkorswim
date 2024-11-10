@@ -33,7 +33,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
                 "Qty": 10,
                 "Position_Type": "LONG",
                 "Side": "BUY",
-                "max_price": 120.0,
+                "Max_Price": 120.0,
                 "Asset_Type": "EQUITY"
             }]
         }
@@ -155,7 +155,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
                 "Qty": 10,
                 "Position_Type": "LONG",
                 "Side": "SELL",
-                "max_price": 120.0,
+                "Max_Price": 135.0,
                 "Asset_Type": "EQUITY"
             },
             {"ExitStrategy": self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"], "Order_Type": "STANDARD"},

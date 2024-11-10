@@ -298,9 +298,22 @@ class TDAmeritrade:
     @exception_handler
     async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None):
         retries = 0
+        last_handler_activity = datetime.now()
+
+        async def update_activity(*args, **kwargs):
+            nonlocal last_handler_activity
+            last_handler_activity = datetime.now()
+            
+            # Check if quote_handler is a coroutine function
+            if asyncio.iscoroutinefunction(quote_handler):
+                await quote_handler(*args, **kwargs)  # Await if it's asynchronous
+            else:
+                quote_handler(*args, **kwargs)  # Call directly if it's synchronous
+
+
         while not (stop_event and stop_event.is_set()):
             try:
-                # Step 1: Login
+                # Step 1: Login and Reset Retries
                 await self._safe_connect_to_streaming()
                 retries = 0  # Reset retries on successful connection
 
@@ -308,11 +321,11 @@ class TDAmeritrade:
                 equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
                 option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
 
-                # Subscribe to equity symbols
+                # Step 3: Register `quote_handler` with callback update
                 if equity_symbols:
                     async with self.lock:
                         if quote_handler not in self.registered_handlers["equity"]:
-                            self.stream_client.add_level_one_equity_handler(quote_handler)
+                            self.stream_client.add_level_one_equity_handler(update_activity)
                             self.registered_handlers["equity"].add(quote_handler)
 
                     await self.stream_client.level_one_equity_add(
@@ -326,11 +339,11 @@ class TDAmeritrade:
                         ]
                     )
 
-                # Subscribe to option symbols
+                # Step 4: Register option symbols and callback
                 if option_symbols:
                     async with self.lock:
                         if quote_handler not in self.registered_handlers["option"]:
-                            self.stream_client.add_level_one_option_handler(quote_handler)
+                            self.stream_client.add_level_one_option_handler(update_activity)
                             self.registered_handlers["option"].add(quote_handler)
 
                     await self.stream_client.level_one_option_add(
@@ -343,29 +356,38 @@ class TDAmeritrade:
                         ]
                     )
 
-                # Step 3: Receive stream in a loop
+                # Step 5: Stream and check for inactivity timeout
                 while not (stop_event and stop_event.is_set()):
                     await self.stream_client.handle_message()
+                    
+                    # If handler not updated, reset the connection
+                    if datetime.now() - last_handler_activity > timedelta(minutes=5):
+                        self.logger.warning("Handler timeout. Removing and retrying connection...")
+                        await self._clean_up_handler(quote_handler)
+                        break  # Break out to reconnect
 
             except (websockets.exceptions.ConnectionClosedOK, websockets.ConnectionClosedError) as e:
                 retries += 1
                 if retries >= max_retries:
-                    self.logger.error("Max retries reached. Continuing to retry indefinitely...")
-                await asyncio.sleep(2 ** retries)  # Exponential backoff
+                    self.logger.error("Max retries reached. Extending cooldown...")
+                    retries = max_retries
+                await asyncio.sleep(2 ** retries)  # Controlled exponential backoff
             except ValueError as e:
                 self.logger.warning(f"Value error encountered: {e}. Reconnecting...")
+                await self._clean_up_handler(quote_handler)
                 await asyncio.sleep(1)
             except Exception as e:
                 self.logger.error(f"Unexpected error: {e}")
+                await self._clean_up_handler(quote_handler)
                 await asyncio.sleep(2 ** retries)  # Exponential backoff
 
         self.logger.info("Streaming canceled.")
 
-    async def receive_stream(self, quote_handler):
-        message = await self.stream_client.handle_message()
-        if message:
-            quote_handler(message)
-
+    async def _clean_up_handler(self, quote_handler):
+        async with self.lock:
+            self.registered_handlers["equity"].discard(quote_handler)
+            self.registered_handlers["option"].discard(quote_handler)
+            self.logger.info(f"Handler {quote_handler} removed from registered_handlers.")
 
     @exception_handler
     async def update_subscription(self, symbols):

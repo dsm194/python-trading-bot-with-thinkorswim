@@ -25,9 +25,9 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
 
         # Verify that updates are stored correctly in the price_updates dictionary
         self.assertIn("position_1", self.position_updater.price_updates)
-        self.assertEqual(self.position_updater.price_updates["position_1"]["max_price"], 150.0)
+        self.assertEqual(self.position_updater.price_updates["position_1"]["Max_Price"], 150.0)
         self.assertIn("position_2", self.position_updater.price_updates)
-        self.assertEqual(self.position_updater.price_updates["position_2"]["max_price"], 250.0)
+        self.assertEqual(self.position_updater.price_updates["position_2"]["Max_Price"], 250.0)
 
     async def test_flush_updates(self):
         """Test that queued updates are flushed to MongoDB correctly."""
@@ -48,9 +48,9 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
         # Verify the structure of each operation in bulk update
         self.assertEqual(len(bulk_operations), 2)
         self.assertEqual(bulk_operations[0]._filter, {"_id": "position_1"})
-        self.assertEqual(bulk_operations[0]._doc["$set"]["max_price"], 150.0)
+        self.assertEqual(bulk_operations[0]._doc["$set"]["Max_Price"], 150.0)
         self.assertEqual(bulk_operations[1]._filter, {"_id": "position_2"})
-        self.assertEqual(bulk_operations[1]._doc["$set"]["max_price"], 250.0)
+        self.assertEqual(bulk_operations[1]._doc["$set"]["Max_Price"], 250.0)
 
         # Verify price_updates dictionary is cleared after flush
         self.assertEqual(len(self.position_updater.price_updates), 0)
