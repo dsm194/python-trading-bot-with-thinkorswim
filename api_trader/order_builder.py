@@ -64,7 +64,7 @@ class OrderBuilderWrapper:
                 "Trader": user["Name"],
                 "Account_ID": account_id,
                 "Strategy": strategy,
-                "Order_Status": "QUEUED",  # Assuming 'QUEUED' indicates pending orders
+                "Order_Status": { "$in": ["PENDING_ACTIVATION", "QUEUED"] },
                 "Direction": "OPEN POSITION"
             }))
         else:
