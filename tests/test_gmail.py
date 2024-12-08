@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 from datetime import datetime
@@ -177,15 +178,18 @@ class TestGmail(unittest.TestCase):
         )
 
 
+    def test_getEmails_no_emails(self):
+        asyncio.run(self.async_test_getEmails_no_emails())
+
     @patch("gmail.Gmail.extractSymbolsFromEmails")
-    def test_getEmails_no_emails(self, mock_extract):
+    async def async_test_getEmails_no_emails(self, mock_extract):
         """Test getEmails when there are no emails (resultSizeEstimate = 0)."""
         
         # Mock the response to simulate no emails in the inbox
         self.mock_service.users().messages().list().execute.return_value = {"resultSizeEstimate": 0}
 
         # Call the getEmails method
-        result = self.gmail.getEmails()
+        result = await self.gmail.getEmails()
 
         # Assert extractSymbolsFromEmails was called with an empty list
         mock_extract.assert_called_once_with([])
@@ -194,8 +198,11 @@ class TestGmail(unittest.TestCase):
         self.assertEqual(result, mock_extract.return_value)
 
 
+    def test_getEmails_with_emails(self):
+        asyncio.run(self.async_test_getEmails_with_emails())
+
     @patch("gmail.Gmail.extractSymbolsFromEmails")
-    def test_getEmails_with_emails(self, mock_extract):
+    async def async_test_getEmails_with_emails(self, mock_extract):
         """Test getEmails when emails are retrieved and processed."""
         
         # Mock the list of emails returned by the API
@@ -214,7 +221,7 @@ class TestGmail(unittest.TestCase):
         ]
 
         # Call the getEmails method
-        result = self.gmail.getEmails()
+        result = await self.gmail.getEmails()
 
         # Assert that the subjects were extracted
         mock_extract.assert_called_once_with(["Email 1 Subject", "Email 2 Subject"])
@@ -227,18 +234,21 @@ class TestGmail(unittest.TestCase):
         self.assertEqual(result, mock_extract.return_value)
 
 
+    def test_getEmails_exception_handling(self):
+        asyncio.run(self.async_test_getEmails_exception_handling())
+
     @patch("gmail.Gmail.extractSymbolsFromEmails")
-    def test_getEmails_exception_handling(self, mock_extract):
+    async def async_test_getEmails_exception_handling(self, mock_extract):
         """Test getEmails when an exception occurs."""
         
         # Simulate an exception being raised during the API call
         self.mock_service.users().messages().list().execute.side_effect = Exception("API Error")
 
         # Call the getEmails method
-        result = self.gmail.getEmails()
+        result = await self.gmail.getEmails()
 
         # Assert the logger recorded the error
-        self.mock_logger.error.assert_called_with(f"Gmail - API Error")
+        self.mock_logger.error.assert_called_with(f"Error fetching email list: API Error")
 
         # Assert that extractSymbolsFromEmails was called with an empty list
         mock_extract.assert_called_once_with([])

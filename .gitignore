@@ -3,7 +3,7 @@ config.env
 *__pycache__
 *.txt
 .VSCodeCounter
-token.json
+token*.json
 credentials.json
 *.log
 test.py

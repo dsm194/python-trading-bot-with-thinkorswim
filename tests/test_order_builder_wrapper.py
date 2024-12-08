@@ -317,7 +317,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
-        api_trader.tdameritrade.getQuote.side_effect = [
+        api_trader.tdameritrade.getQuoteUnified.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 
@@ -364,7 +364,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
-        api_trader.tdameritrade.getQuote.side_effect = [
+        api_trader.tdameritrade.getQuoteUnified.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 
@@ -411,7 +411,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuote.side_effect = [
+        api_trader.tdameritrade.getQuoteUnified.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 
@@ -617,7 +617,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
-        api_trader.tdameritrade.getQuote.side_effect = [
+        api_trader.tdameritrade.getQuoteUnified.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 

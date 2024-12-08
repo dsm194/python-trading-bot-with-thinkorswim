@@ -35,7 +35,7 @@ class Tasks:
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
         self.strategy_dict = {}  # Class-level strategy dictionary
-        self.lock = threading.Lock()  # Lock for synchronizing access
+        self.lock = asyncio.Lock()
         self._cached_market_hours = {}
         self._cached_market_hours_timestamp = 0
 
@@ -56,7 +56,7 @@ class Tasks:
 
         # Caching market hours for a certain period
         if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:  # Cache for 5 mins
-            self._cached_market_hours = self.tdameritrade.getMarketHours(date=dtNow)
+            self._cached_market_hours = await self.tdameritrade.getMarketHoursUnified(date=dtNow, use_async=True)
             self._cached_market_hours_timestamp = time.time()
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
@@ -73,7 +73,7 @@ class Tasks:
         strategies = self.strategies.find({"Account_ID": self.account_id})
 
         # Group positions by symbol to minimize the number of API calls
-        with self.lock:  # Lock during modification
+        async with self.lock:  # Lock during modification
             # Create a mapping for new symbols with asset types
             new_symbols = []
             for position in open_positions:
@@ -106,7 +106,7 @@ class Tasks:
             # Callback function invoked when quotes are updated
             # print(f"Evaluating paper triggers for {symbol}: {quote_data}")
 
-            with self.lock:  # Lock during modification
+            async with self.lock:  # Lock during modification
                 local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
 
             for position in local_positions_by_symbol:
@@ -151,7 +151,7 @@ class Tasks:
                     # The exit conditions are met, so we need to close the position
                     position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                     strategy_data["Order_Type"] = "STANDARD"
-                    self.sendOrder(position, strategy_data, "CLOSE POSITION")
+                    await self.sendOrder(position, strategy_data, "CLOSE POSITION")
 
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop
@@ -159,7 +159,7 @@ class Tasks:
         self.thread.join()  # Wait for the thread to finish
 
     @exception_handler
-    def checkOCOtriggers(self):
+    async def checkOCOtriggers(self):
         """Checks OCO triggers (stop loss/ take profit) to see if either one has filled. 
         If so, closes the position in MongoDB accordingly.
         """
@@ -191,15 +191,15 @@ class Tasks:
                 if "childOrderStrategies" in child_order:
                     # Recursively process the OCO child orders
                     for nested_order in child_order["childOrderStrategies"]:
-                        self.process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
+                        await self.process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
                 else:
                     # Process regular child order
-                    self.process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
+                    await self.process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
 
         # Execute bulk updates and inserts
         self.apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
 
-    def process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
+    async def process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
         """Processes individual child orders and updates status."""
         order_id = child_order.get("Order_ID")
         if not order_id:
@@ -207,7 +207,7 @@ class Tasks:
             return
 
         # Query the order status using the order_id
-        spec_order = self.tdameritrade.getSpecificOrder(order_id)
+        spec_order = await self.tdameritrade.getSpecificOrderUnified(order_id, use_async=True)
         new_status = spec_order.get("status")
 
         if not new_status:
@@ -367,7 +367,7 @@ class Tasks:
         # RUN TASKS ####################################################
                 
         # Run synchronous method in a separate thread
-        await asyncio.to_thread(self.checkOCOtriggers)
+        await self.checkOCOtriggers()
 
         await self.checkOCOpapertriggers()
 

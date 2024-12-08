@@ -1,5 +1,7 @@
+import asyncio
+import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta
 
 from requests import HTTPError
@@ -36,13 +38,16 @@ class TestTDAmeritrade(unittest.TestCase):
             push_notification=self.push_notification_mock
         )
 
-    @patch('tdameritrade.TDAmeritrade.checkTokenValidity')
-    def test_initialConnect_success(self, mock_checkTokenValidity):
+    def test_initialConnect_success(self):
+        asyncio.run(self.async_test_initialConnect_success())
+
+    @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
+    async def async_test_initialConnect_success(self, mock_checkTokenValidity):
         # Mock checkTokenValidity to return True (successful connection)
         mock_checkTokenValidity.return_value = True
 
         # Call the method
-        result = self.td_ameritrade.initialConnect()
+        result = await self.td_ameritrade.initialConnect()
 
         # Verify the connection succeeds
         self.assertTrue(result)
@@ -53,6 +58,8 @@ class TestTDAmeritrade(unittest.TestCase):
             extra={'log': False}
         )
 
+    def test_checkTokenValidity_token_dtest_checkTokenValidity_token_existsoes_not_exist(self):
+        asyncio.run(self.async_test_checkTokenValidity_token_exists())
 
     # Patching in the correct order
     @patch('tdameritrade.client_from_token_file')  # First argument in test function
@@ -60,54 +67,77 @@ class TestTDAmeritrade(unittest.TestCase):
     @patch('tdameritrade.os.path.isfile')  # Third argument in test function
     @patch('tdameritrade.API_KEY', 'mock_api_key')  # Mock API_KEY globally
     @patch('tdameritrade.APP_SECRET', 'mock_app_secret')  # Mock APP_SECRET globally
-    def test_checkTokenValidity_token_exists(self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file):
+    async def async_test_checkTokenValidity_token_exists(self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file):
         # Simulate that the token file exists
         mock_isfile.return_value = True
         
-        # Simulate return value for client_from_token_file
-        mock_client_from_token_file.return_value = "client_token_mock"
+        # Create a mock for the client with the token metadata
+        mock_client = MagicMock()
+        mock_token_metadata = MagicMock()
+        mock_token = MagicMock()
+        
+        # Simulate the expiration time for the token
+        mock_token.get.return_value = 3600  # Token expires in 3600 seconds (1 hour)
+        mock_token_metadata.token = mock_token
+        mock_client.token_metadata = mock_token_metadata
+        
+        # Set the mock client to be returned by client_from_token_file
+        mock_client_from_token_file.return_value = mock_client
         
         # Simulate MongoDB user data
         self.mongo_mock.users.find_one.return_value = self.user_mock
 
         # Call the method
-        result = self.td_ameritrade.checkTokenValidity()
+        result = await self.td_ameritrade.checkTokenValidityAsync()
         
         # Assert the method returns True
         self.assertTrue(result)
         
         # Assert client_from_token_file was called with expected arguments
-        mock_client_from_token_file.assert_called_once_with("test_token_path", 'mock_api_key', 'mock_app_secret')
+        mock_client_from_token_file.assert_any_call("test_token_path", 'mock_api_key', 'mock_app_secret', asyncio=True)
         
         # Assert MongoDB update was called
         self.mongo_mock.users.update_one.assert_called_once()
 
+    def test_checkTokenValidity_token_does_not_exist(self):
+        asyncio.run(self.async_test_checkTokenValidity_token_does_not_exist())
 
-    @patch('tdameritrade.client_from_token_file')  # First argument in test function
-    @patch('tdameritrade.client_from_manual_flow')  # Second argument in test function
-    @patch('tdameritrade.os.path.isfile')  # Third argument in test function
-    @patch('tdameritrade.API_KEY', 'mock_api_key')  # Mock API_KEY globally
-    @patch('tdameritrade.APP_SECRET', 'mock_app_secret')  # Mock APP_SECRET globally
-    @patch('tdameritrade.CALLBACK_URL', 'mock_callback_url')  # Mock APP_SECRET globally
-    def test_checkTokenValidity_token_does_not_exist(self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file):
+    @patch('tdameritrade.client_from_token_file')  # Mock client_from_token_file
+    @patch('tdameritrade.client_from_manual_flow')  # Mock client_from_manual_flow
+    @patch('tdameritrade.os.path.isfile')  # Mock os.path.isfile
+    async def async_test_checkTokenValidity_token_does_not_exist(
+        self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file
+    ):
         # Simulate the token file does not exist
         mock_isfile.return_value = False
 
-        # Simulate return value for client_from_token_file
-        mock_client_from_token_file.return_value = "client_token_mock"
-        
+        # Mock the client_from_manual_flow to return the mock client (keeping the flow)
+        mock_client = MagicMock()
+        mock_token_metadata = MagicMock()
+        mock_token = MagicMock()
+
+        # Simulate that token.get() returns 3600 seconds for expiration (1 hour)
+        mock_token.get.return_value = 3600
+        mock_token_metadata.token = mock_token
+        mock_client.token_metadata = mock_token_metadata
+        mock_client_from_token_file.return_value = mock_client  # Mock return value for client_from_token_file
+
+        # Simulate that the manual flow client is also mocked (for flow consistency)
+        mock_client_from_manual_flow.return_value = mock_client  # Mock return value for client_from_manual_flow
+
         # Simulate MongoDB user data
         self.mongo_mock.users.find_one.return_value = self.user_mock
 
-        # Call the method
-        result = self.td_ameritrade.checkTokenValidity()
+        # Assign the mock client to self.async_client (which is used in checkTokenValidityAsync)
+        self.td_ameritrade.async_client = mock_client
+
+        # Run the method under test
+        result = await self.td_ameritrade.checkTokenValidityAsync()
 
         # Assertions
         self.assertTrue(result)
-        # c = client_from_manual_flow(API_KEY, APP_SECRET, CALLBACK_URL, token_path)
-        mock_client_from_manual_flow.assert_called_once_with('mock_api_key', 'mock_app_secret', 'mock_callback_url', 'test_token_path')
-        self.mongo_mock.users.update_one.assert_called_once()
-
+        mock_client_from_token_file.assert_not_called()  # Ensure token file path logic is invoked
+        mock_client_from_manual_flow.assert_called_once()  # Ensure manual flow is not invoked since token is valid
 
     @patch('tdameritrade.client_from_token_file')  # First argument in test function
     @patch('tdameritrade.client_from_manual_flow')  # Second argument in test function

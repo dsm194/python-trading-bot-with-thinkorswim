@@ -44,15 +44,16 @@ class TestApiTrader(unittest.TestCase):
         self.account_id = "12345"
         self.tdameritrade = MagicMock()
 
-        # Instantiate ApiTrader
-        self.api_trader = ApiTrader(
-            user=self.user,
-            mongo=self.mongo,
-            push=self.push,
-            logger=self.logger,
-            account_id=self.account_id,
-            tdameritrade=self.tdameritrade
-        )
+        with patch.dict(os.environ, {'RUN_TASKS': 'False'}):  # Set the environment variable for the test
+            # Instantiate ApiTrader
+            self.api_trader = ApiTrader(
+                user=self.user,
+                mongo=self.mongo,
+                push=self.push,
+                logger=self.logger,
+                account_id=self.account_id,
+                tdameritrade=self.tdameritrade
+            )
 
         self.queue_order = {
             "Symbol": "AAPL",
@@ -74,9 +75,6 @@ class TestApiTrader(unittest.TestCase):
 
     @patch.dict(os.environ, {'RUN_TASKS': 'True'})  # Set the environment variable for the test
     def test_initialization_live_trader(self):
-        
-        # Debug: Check the environment variable directly in the test
-        print("RUN_TASKS (within test):", os.getenv('RUN_TASKS'))
 
         # Set up your mocks and variables
         self.user = {
@@ -122,9 +120,6 @@ class TestApiTrader(unittest.TestCase):
     @patch('api_trader.ApiTrader.run_tasks_with_exit_check')
     def test_initialization_paper_trader(self, mock_run_tasks_with_exit_check):
 
-        # Debug: Check the environment variable directly in the test
-        print("RUN_TASKS (within test):", os.getenv('RUN_TASKS'))
-
         self.user["Accounts"]["12345"]["Account_Position"] = "Paper"
         self.api_trader = ApiTrader(
             user=self.user,
@@ -152,10 +147,13 @@ class TestApiTrader(unittest.TestCase):
     #     self.api_trader.run_tasks_with_exit_check()
     #     self.assertFalse(self.api_trader.runTasks.called)
 
+    def test_send_order_live(self):
+        asyncio.run(self.async_test_send_order_live())
+
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.OrderBuilderWrapper.standardOrder')
     @patch('api_trader.ApiTrader.queueOrder')
-    def test_send_order_live(self, mock_queue_order, mock_standard_order, mock_init):
+    async def async_test_send_order_live(self, mock_queue_order, mock_standard_order, mock_init):
 
         # Setup mocks
         trade_data = {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY"}
@@ -193,21 +191,21 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.tdameritrade = MagicMock()
         self.api_trader.check_stop_signal = MagicMock(return_value=False)
         self.api_trader.stop_signal_file = "mock_stop_signal_file"  # Add this line to mock the stop_signal_file
-        self.api_trader.tdameritrade.placeTDAOrder = MagicMock(return_value={"Order_ID": "12345"})
+        self.api_trader.tdameritrade.placeTDAOrderUnified = AsyncMock(return_value={"Order_ID": "12345"})
         self.api_trader.RUN_LIVE_TRADER = True  # Mock or set RUN_LIVE_TRADER attribute
 
         # Call method: Open Position Scenario
-        self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
+        await self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
         
         # Assert correct order placement behavior
         self.api_trader.logger.warning.assert_not_called()
         self.api_trader.logger.error.assert_not_called()
-        mock_standard_order.assert_called_once_with(trade_data, strategy_object, "OPEN POSITION", self.api_trader.user, self.api_trader.account_id)
-        self.api_trader.tdameritrade.placeTDAOrder.assert_called_once()
+        mock_standard_order.assert_called_once_with(trade_data, strategy_object, "OPEN POSITION", self.api_trader.user, self.api_trader.account_id, use_async=True)
+        self.api_trader.tdameritrade.placeTDAOrderUnified.assert_called_once()
         mock_queue_order.assert_called_once()
 
         # Call method: Simulate failure in the second call (quote data missing)
-        self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
+        await self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
 
         # Instead of matching the entire error message, use partial matching with assert_any_call
         # This checks if 'Failed to place order' was logged without requiring exact match
@@ -215,14 +213,17 @@ class TestApiTrader(unittest.TestCase):
 
         # Test placing an order with RUN_LIVE_TRADER set to False
         self.api_trader.RUN_LIVE_TRADER = False
-        self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
+        await self.api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
         
         # Assert that placeTDAOrder was not called in paper trading mode
-        self.api_trader.tdameritrade.placeTDAOrder.assert_called_once()  # Should be called only once in live mode
+        self.api_trader.tdameritrade.placeTDAOrderUnified.assert_called_once()  # Should be called only once in live mode
         mock_queue_order.assert_called()
 
+    def test_send_order_paper(self):
+        asyncio.run(self.async_test_send_order_paper())
+
     @patch('api_trader.ApiTrader.queueOrder')
-    def test_send_order_paper(self, mock_queue_order):
+    async def async_test_send_order_paper(self, mock_queue_order):
         self.api_trader = ApiTrader(
             user=self.user,
             mongo=self.mongo,
@@ -236,20 +237,22 @@ class TestApiTrader(unittest.TestCase):
 
         strategy_object = {"Order_Type": "STANDARD", "Position_Type": "LONG"}
 
-        self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
+        await self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
         
         mock_queue_order.assert_called_once()
 
+    def test_send_order_oco(self):
+        asyncio.run(self.async_test_send_order_oco())
 
     @patch.object(OrderBuilderWrapper, 'OCOorder', return_value=("mock_order", {"key": "value"}))
     @patch.object(ApiTrader, 'queueOrder', return_value=None)
-    def test_send_order_oco(self, mock_queueOrder, mock_OCOorder):
+    async def async_test_send_order_oco(self, mock_queueOrder, mock_OCOorder):
 
         self.api_trader.tdameritrade = MagicMock()
         
         # Set the account_id explicitly if not already set
         self.account_id = '12345'
-        self.api_trader.tdameritrade.placeTDAOrder = MagicMock(return_value={"Order_ID": self.account_id})
+        self.api_trader.tdameritrade.placeTDAOrderUnified = AsyncMock(return_value={"Order_ID": self.account_id})
 
         """ Test the OCO order branch in sendOrder method """
 
@@ -258,10 +261,10 @@ class TestApiTrader(unittest.TestCase):
         trade_data = create_mock_open_positions(1)[0]
 
         # Call sendOrder to trigger the OCO branch
-        self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
+        await self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
 
         # Verify the OCOorder method was called with the correct arguments
-        mock_OCOorder.assert_called_once_with(trade_data, strategy_object, "CLOSE POSITION", self.user, self.account_id)
+        mock_OCOorder.assert_called_once_with(trade_data, strategy_object, "CLOSE POSITION", self.user, self.account_id, use_async=True)
 
         # Construct the expected order details after updates
         updated_obj = {
@@ -277,7 +280,7 @@ class TestApiTrader(unittest.TestCase):
         )
 
         # Check that placeTDAOrder was called with the correct order object
-        self.api_trader.tdameritrade.placeTDAOrder.assert_called_once_with('mock_order')
+        self.api_trader.tdameritrade.placeTDAOrderUnified.assert_called_once_with('mock_order', use_async=True)
         
 
     def test_queueOrder(self):
@@ -299,13 +302,16 @@ class TestApiTrader(unittest.TestCase):
             upsert=True
         )
 
+    def test_update_status_filled_order(self):
+        asyncio.run(self.async_test_update_status_filled_order())
+
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_update_status_filled_order(self, mock_init):
+    async def async_test_update_status_filled_order(self, mock_init):
         
         self.api_trader.pushOrder = MagicMock()
 
         # Mock the getSpecificOrder to return a FILLED status
-        self.api_trader.tdameritrade.getSpecificOrder.side_effect = [{"status": "FILLED", "Order_ID": "12345"}]
+        self.api_trader.tdameritrade.getSpecificOrderUnified = AsyncMock(side_effect = [{"status": "FILLED", "Order_ID": "12345"}])
         self.api_trader.queue = MagicMock()
         self.api_trader.queue.find.return_value = [
             {"Symbol": "AAPL", "Order_ID": "12345", "Order_Type": "STANDARD",
@@ -315,7 +321,7 @@ class TestApiTrader(unittest.TestCase):
         ]
 
         # Call updateStatus
-        self.api_trader.updateStatus()
+        await self.api_trader.updateStatus()
 
         # Assert pushOrder was called once with the queued order and the specific order
         self.api_trader.pushOrder.assert_called_once_with(
@@ -329,14 +335,16 @@ class TestApiTrader(unittest.TestCase):
         )
         self.api_trader.logger.warning.assert_not_called()
 
+    def test_update_status_order_not_found(self):
+        asyncio.run(self.async_test_update_status_order_not_found())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_update_status_order_not_found(self, mock_init):
+    async def async_test_update_status_order_not_found(self, mock_init):
 
         self.api_trader.pushOrder = MagicMock()
 
         # Mock the getSpecificOrder to return a FILLED status
-        self.api_trader.tdameritrade.getSpecificOrder.side_effect = [{"message": "Order not found"}]
+        self.api_trader.tdameritrade.getSpecificOrderUnified = AsyncMock(side_effect = [{"message": "Order not found"}])
         self.api_trader.queue = MagicMock()
         self.api_trader.queue.find.return_value = [
             {"Symbol": "AAPL", "Order_ID": "12345", "Order_Type": "STANDARD",
@@ -346,7 +354,7 @@ class TestApiTrader(unittest.TestCase):
         ]
 
         # Call updateStatus
-        self.api_trader.updateStatus()
+        await self.api_trader.updateStatus()
 
         # Assert pushOrder was called with "Assumed" data integrity
         self.api_trader.pushOrder.assert_called_once_with(
@@ -367,16 +375,18 @@ class TestApiTrader(unittest.TestCase):
             "Order ID Not Found. Moving AAPL STANDARD Order To OPEN POSITION Positions ("
         ), f"Log message '{log_message[0]}' did not start with the expected string."
 
-
+    def test_update_status_canceled_rejected(self):
+        asyncio.run(self.async_test_update_status_canceled_rejected())
+        
     @patch.object(ApiTrader, 'pushOrder', return_value=None)
-    def test_update_status_canceled_rejected(self, mock_pushOrder):
+    async def async_test_update_status_canceled_rejected(self, mock_pushOrder):
         # Mock the queued order
         self.mongo.return_value.__getitem__.return_value.find.return_value = [
             {"Order_ID": "12345", "Symbol": "SYM0", "Order_Type": "OCO", "Qty": 10, "Strategy": "STRATEGY_0", "Entry_Price": 100.0}
         ]
         
         # Mock the specific order response for "CANCELED"
-        self.api_trader.tdameritrade.getSpecificOrder = MagicMock(return_value={"Order_ID": "12345", "status": "CANCELED"})
+        self.api_trader.tdameritrade.getSpecificOrderUnified = AsyncMock(return_value={"Order_ID": "12345", "status": "CANCELED"})
         
         # Add mock collections (queue, canceled, and rejected) to ApiTrader instance
         self.api_trader.queue = self.mongo.return_value.__getitem__.return_value  # Mock the queue collection
@@ -384,7 +394,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.rejected = self.mongo.return_value.__getitem__.return_value  # Mock the rejected collection
         
         # Call updateStatus for "CANCELED"
-        self.api_trader.updateStatus()
+        await self.api_trader.updateStatus()
 
         # Verify that the order was removed from the queue
         self.api_trader.queue.delete_one.assert_called_once()
@@ -405,8 +415,8 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.canceled.insert_one.assert_called_with(expected_canceled_order)
 
         # Now handle the "REJECTED" case
-        self.api_trader.tdameritrade.getSpecificOrder.return_value = {"Order_ID": "12345", "status": "REJECTED"}
-        self.api_trader.updateStatus()
+        self.api_trader.tdameritrade.getSpecificOrderUnified.return_value = {"Order_ID": "12345", "status": "REJECTED"}
+        await self.api_trader.updateStatus()
 
         # Verify the order was removed from the queue again
         self.api_trader.queue.delete_one.assert_called_with(
@@ -433,16 +443,18 @@ class TestApiTrader(unittest.TestCase):
         # Verify insert_one was called twice (once for "CANCELED", once for "REJECTED")
         self.assertEqual(self.api_trader.rejected.insert_one.call_count, 2)
 
+    def test_update_status_else_branch(self):
+        asyncio.run(self.async_test_update_status_else_branch())
 
     @patch.object(ApiTrader, 'pushOrder', return_value=None)
-    def test_update_status_else_branch(self, mock_pushOrder):
+    async def async_test_update_status_else_branch(self, mock_pushOrder):
         # Mock the queued order
         self.mongo.return_value.__getitem__.return_value.find.return_value = [
             {"Order_ID": "12345", "Symbol": "SYM0", "Order_Type": "OCO", "Qty": 10, "Strategy": "STRATEGY_0", "Entry_Price": 100.0, "Account_ID": "12345"}
         ]
 
         # Mock the specific order response with a non-matching status
-        self.api_trader.tdameritrade.getSpecificOrder = MagicMock(return_value={
+        self.api_trader.tdameritrade.getSpecificOrderUnified = AsyncMock(return_value={
             "Order_ID": "12345", 
             "status": "PENDING",  # Non-matching status
             # No childOrderStrategies here
@@ -454,7 +466,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.rejected = self.mongo.return_value.__getitem__.return_value
 
         # Call updateStatus to trigger the else branch
-        self.api_trader.updateStatus()
+        await self.api_trader.updateStatus()
 
         # Verify that the order was not removed from the queue
         self.api_trader.queue.delete_one.assert_not_called()
@@ -475,7 +487,6 @@ class TestApiTrader(unittest.TestCase):
         }
 
         self.api_trader.queue.update_one.assert_called_once_with(expected_filter, expected_update)
-
 
     def test_pushOrder_open_position(self):
         # Call the pushOrder method
@@ -640,10 +651,12 @@ class TestApiTrader(unittest.TestCase):
         #     ">>>> \n Side: BUY \n Symbol: AAPL \n Qty: 10 \n Price: $150.0 \n Strategy: TestStrategy \n Trader: TestUser"
         # )
 
+    def test_run_trader(self):
+        asyncio.run(self.async_test_run_trader())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock the constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
-    def test_run_trader(self, mock_sendOrder, mock_init):
+    async def async_test_run_trader(self, mock_sendOrder, mock_init):
 
         # Mock relevant methods/attributes used in run_trader
         self.api_trader.queue = MagicMock()
@@ -651,7 +664,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.mongo = MagicMock()
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
-        self.api_trader.updateStatus = MagicMock()
+        self.api_trader.updateStatus = AsyncMock()
 
         # Mock the find_one method on open_positions and queue to None value, so that runTrader will BUY
         self.api_trader.open_positions.find_one.return_value = None
@@ -662,7 +675,7 @@ class TestApiTrader(unittest.TestCase):
         trade_data = [{"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY", 'Asset_Type': 'EQUITY'}]
 
         # Call run_trader method
-        self.api_trader.runTrader(trade_data=trade_data)
+        await self.api_trader.runTrader(trade_data=trade_data)
 
         # Add assertions here
         self.api_trader.open_positions.find_one.assert_called_once()  # Ensure mongo query is performed
@@ -671,9 +684,12 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.updateStatus.assert_called()  # Ensure status is updated
         mock_sendOrder.assert_called_once()
 
+    def test_runTrader_with_dynamic_round_trip_orders(self):
+        asyncio.run(self.async_test_runTrader_with_dynamic_round_trip_orders())
+
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
-    def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
+    async def async_test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
 
         # Mock relevant methods/attributes used in run_trader
         self.api_trader.queue = MagicMock()
@@ -681,7 +697,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.mongo = MagicMock()
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
-        self.api_trader.updateStatus = MagicMock()
+        self.api_trader.updateStatus = AsyncMock()
         
         # Mock dependencies
         self.api_trader.mongo = MagicMock()
@@ -696,7 +712,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.mongo.strategies.find.return_value = strategies
 
         # Mock the getQuotes method to return simulated quotes data
-        self.api_trader.tdameritrade.getQuotes.return_value = quotes
+        self.api_trader.tdameritrade.getQuotesUnified.return_value = quotes
 
         # Mock queue.find_one to simulate unqueued orders
         self.api_trader.queue.find_one.return_value = None
@@ -713,7 +729,7 @@ class TestApiTrader(unittest.TestCase):
 
         # Call runTrader with the mock data
         trade_data = [{"Symbol": position["Symbol"], "Strategy": position["Strategy"], "Side": position["Side"], 'Asset_Type': position["Asset_Type"]} for position in open_positions]
-        self.api_trader.runTrader(trade_data=trade_data)
+        await self.api_trader.runTrader(trade_data=trade_data)
 
         # Add assertions here
         self.api_trader.open_positions.find_one.assert_called()  # Ensure mongo query is performed
@@ -751,12 +767,12 @@ class TestApiTrader(unittest.TestCase):
         """Test that a ReadTimeout exception in add_quotes is handled and logged properly."""
         
         # Mock getMarketHours to return normal data to avoid exceptions there
-        self.api_trader.tdameritrade.getMarketHours = MagicMock(return_value={'isOpen': True})
+        self.api_trader.tdameritrade.getMarketHoursUnified = AsyncMock(return_value={'isOpen': True})
 
         # Mock the quote manager and make add_quotes raise an exception
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.stop_event = MagicMock()
-        self.api_trader.quote_manager.add_quotes.side_effect = httpx.ReadTimeout("Read operation timed out.")
+        self.api_trader.quote_manager.add_quotes = AsyncMock(side_effect = httpx.ReadTimeout("Read operation timed out."))
         
         # Mock open_positions
         num_positions = 1
@@ -786,12 +802,12 @@ class TestApiTrader(unittest.TestCase):
         """Test that an exception in add_quotes is handled and logged properly."""
         
         # Mock getMarketHours to return normal data to avoid exceptions there
-        self.api_trader.tdameritrade.getMarketHours = MagicMock(return_value={'isOpen': True})
+        self.api_trader.tdameritrade.getMarketHoursUnified = AsyncMock(return_value={'isOpen': True})
 
         # Mock the quote manager and make add_quotes raise an exception
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.stop_event = MagicMock()
-        self.api_trader.quote_manager.add_quotes.side_effect = httpx.ConnectTimeout("Connection timed out.")
+        self.api_trader.quote_manager.add_quotes = AsyncMock(side_effect = httpx.ConnectTimeout("Connection timed out."))
 
         # Mock open_positions
         num_positions = 1
@@ -821,7 +837,7 @@ class TestApiTrader(unittest.TestCase):
         """Test that an exception in add_quotes is handled and logged properly."""
         
         # Mock getMarketHours to return normal data to avoid exceptions there
-        self.api_trader.tdameritrade.getMarketHours = MagicMock(return_value={'isOpen': True})
+        self.api_trader.tdameritrade.getMarketHoursUnified = AsyncMock(return_value={'isOpen': True})
 
         # Mock the quote manager and make add_quotes raise an exception
         self.api_trader.quote_manager = AsyncMock()
@@ -848,7 +864,6 @@ class TestApiTrader(unittest.TestCase):
             mock_logger_error.assert_called_once()
             self.assertIn("An unexpected error in add_quotes", mock_logger_error.call_args[0][0])
 
-
     def test_checkOCOpapertriggers_with_large_data(self):
         # Use asyncio.run to handle async calls in the unittest framework
         asyncio.run(self.async_test_checkOCOpapertriggers_with_large_data())
@@ -872,7 +887,7 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies = MagicMock()
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.add_quotes = AsyncMock()
-        self.api_trader.lock = threading.Lock()
+        self.api_trader.lock = asyncio.Lock()
         self.api_trader.positions_by_symbol = {}
         self.api_trader.strategy_dict = {}
 
@@ -889,7 +904,9 @@ class TestApiTrader(unittest.TestCase):
 
         # Mock quotes
         mock_quotes_data = create_mock_quotes(num_positions)
-        self.api_trader.tdameritrade.getQuotes = MagicMock(return_value=mock_quotes_data)        
+        self.api_trader.tdameritrade.getQuotesUnified = AsyncMock(return_value=mock_quotes_data)
+
+        self.api_trader.tdameritrade.getMarketHoursUnified = AsyncMock(return_value={"isOpen": True})
 
         # Mock the quotes update method
         self.api_trader.tdameritrade.quotes = MagicMock()
@@ -939,12 +956,12 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.RUN_LIVE_TRADER = True
         self.api_trader.open_positions = MagicMock()
         self.api_trader.strategies = MagicMock()
-        self.api_trader.lock = threading.Lock()
+        self.api_trader.lock = asyncio.Lock()
         self.api_trader.positions_by_symbol = {}
         self.api_trader.strategy_dict = {}
         
         # Mock getMarketHours to return open market hours
-        self.api_trader.tdameritrade.getMarketHours = MagicMock(return_value={"isOpen": True})
+        self.api_trader.tdameritrade.getMarketHoursUnified = AsyncMock(return_value={"isOpen": True})
         
         # Mock open positions with a list of mock positions
         mock_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
@@ -967,9 +984,12 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.strategies.find.assert_called()
         self.api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "AAPL", "asset_type": "EQUITY"}])
 
+    def test_checkOCOtriggers(self):
+        asyncio.run(self.async_test_checkOCOtriggers())
+
     @patch('api_trader.ApiTrader.__init__', return_value=None)
     @patch.object(ApiTrader, 'pushOrder', return_value=None)  # Mock pushOrder in ApiTrader
-    def test_checkOCOtriggers(self, mock_pushOrder, mock_init):
+    async def async_test_checkOCOtriggers(self, mock_pushOrder, mock_init):
         # Initialize ApiTrader instance
         self.api_trader = ApiTrader()
 
@@ -1038,15 +1058,16 @@ class TestApiTrader(unittest.TestCase):
         ]
 
         # Mock getSpecificOrder for different orders
-        self.api_trader.tdameritrade.getSpecificOrder.side_effect = [
-            {"status": "FILLED", "Order_ID": 12345},
-            {"status": "CANCELED", "Order_ID": 67890},
-            {"status": "REJECTED", "Order_ID": 13579},
-            {"status": "WORKING", "Order_ID": 24680},
-        ]
+        self.api_trader.tdameritrade.getSpecificOrderUnified = AsyncMock(
+            side_effect = [
+                {"status": "FILLED", "Order_ID": 12345},
+                {"status": "CANCELED", "Order_ID": 67890},
+                {"status": "REJECTED", "Order_ID": 13579},
+                {"status": "WORKING", "Order_ID": 24680},
+            ])
 
         # Call the method under test
-        self.api_trader.checkOCOtriggers()
+        await self.api_trader.checkOCOtriggers()
 
         # Check that pushOrder was called for the filled order
         mock_pushOrder.assert_called_once_with(
@@ -1500,8 +1521,11 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.logger.error.assert_called_once_with(f"Missing Order_ID detected: {spec_order['childOrderStrategies'][0]['childOrderStrategies'][0]}")
 
 
-    @patch('api_trader.ApiTrader.sendOrder')  # Mock the order sending
-    def test_multiple_strategies_with_price_movement(self, mock_send_order):
+    def test_multiple_strategies_with_price_movement(self):
+        asyncio.run(self.async_test_multiple_strategies_with_price_movement())
+
+    @patch('api_trader.ApiTrader.sendOrder', new_callable=AsyncMock)  # Mock the order sending as async
+    async def async_test_multiple_strategies_with_price_movement(self, mock_send_order):
         # Step 1: Initialize ApiTrader and strategies
         self.api_trader.get_open_positions = MagicMock()
         self.api_trader.get_queued_positions = MagicMock()
@@ -1568,7 +1592,7 @@ class TestApiTrader(unittest.TestCase):
 
                 if should_exit:
                     # Mock sending the order
-                    mock_send_order(strategy, "SELL", position["Qty"], price)
+                    await mock_send_order(strategy, "SELL", position["Qty"], price)
                     # Mark the position as exited
                     position["exited"] = True
 

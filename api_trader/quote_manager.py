@@ -18,7 +18,7 @@ class QuoteManager:
 
     # Define a handler for updating quotes as they stream
     async def quote_handler(self, quotes):
-        self.logger.info(f"Received quote: {quotes}")
+        self.logger.debug(f"Received quote: {quotes}")
 
         # Extract the content property directly as a list of quotes
         quote_list = quotes['content']
@@ -32,7 +32,7 @@ class QuoteManager:
 
     
             # Log or handle each quote as needed
-            self.logger.info(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}, Last Price: {last_price}, Regular Market Last Price: {regular_market_last_price}")
+            self.logger.debug(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}, Last Price: {last_price}, Regular Market Last Price: {regular_market_last_price}")
 
             # Store the quotes in a dictionary
             async with self.lock:
@@ -62,6 +62,7 @@ class QuoteManager:
         try:
             for callback in callbacks:
                 if callback is not None:
+                    # self.logger.debug(f"Calling callback: {callback}")
                     if asyncio.iscoroutinefunction(callback):
                         await callback(symbol, quote)
                     else:

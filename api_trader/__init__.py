@@ -100,7 +100,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
     # STEP ONE
     @exception_handler
-    def sendOrder(self, trade_data, strategy_object, direction):
+    async def sendOrder(self, trade_data, strategy_object, direction):
         from schwab.utils import Utils
 
         symbol = trade_data["Symbol"]
@@ -114,11 +114,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         if order_type == "STANDARD":
 
             order, obj = self.standardOrder(
-                trade_data, strategy_object, direction, self.user, self.account_id)
+                trade_data, strategy_object, direction, self.user, self.account_id, use_async=True)
 
         elif order_type == "OCO":
 
-            order, obj = self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id)
+            order, obj = self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id, use_async=True)
 
         if order == None and obj == None:
 
@@ -127,7 +127,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         # PLACE ORDER IF LIVE TRADER ################################################
         if self.RUN_LIVE_TRADER:
 
-            order_details = self.tdameritrade.placeTDAOrder(order)
+            order_details = await self.tdameritrade.placeTDAOrderUnified(order, use_async=True)
 
             if not order_details or "Order_ID" not in order_details:
                 # Handle the case where order placement failed
@@ -179,7 +179,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
     # STEP THREE
     @exception_handler
-    def updateStatus(self):
+    async def updateStatus(self):
         """ METHOD QUERIES THE QUEUED ORDERS AND USES THE ORDER ID TO QUERY TDAMERITRADES ORDERS FOR ACCOUNT TO CHECK THE ORDERS CURRENT STATUS.
             INITIALLY WHEN ORDER IS PLACED, THE ORDER STATUS ON TDAMERITRADES END IS SET TO WORKING OR QUEUED. THREE OUTCOMES THAT I AM LOOKING FOR ARE
             FILLED, CANCELED, REJECTED.
@@ -196,7 +196,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         for queue_order in queued_orders:
 
-            spec_order = self.tdameritrade.getSpecificOrder(queue_order["Order_ID"])
+            spec_order = await self.tdameritrade.getSpecificOrderUnified(queue_order["Order_ID"], use_async=True)
 
             # Check if spec_order is None before attempting to access it
             if spec_order is None:
@@ -399,7 +399,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
     # RUN TRADER
     @exception_handler
-    def runTrader(self, trade_data):
+    async def runTrader(self, trade_data):
         """ METHOD RUNS ON A FOR LOOP ITERATING OVER THE TRADE DATA AND MAKING DECISIONS ON WHAT NEEDS TO BUY OR SELL.
 
         Args:
@@ -407,7 +407,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         """
 
         # UPDATE ALL ORDER STATUS'S
-        self.updateStatus()
+        await self.updateStatus()
 
         # UPDATE USER ATTRIBUTE
         self.user = self.mongo.users.find_one({"Name": self.user["Name"]})
@@ -510,5 +510,5 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
                 if direction != None:
 
-                    self.sendOrder(row if not open_position else {
+                    await self.sendOrder(row if not open_position else {
                                    **row, **open_position}, strategy_object, direction)

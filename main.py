@@ -69,7 +69,7 @@ class Main:
         return False
 
     @exception_handler
-    def setupTraders(self):
+    async def setupTraders(self):
         """ METHOD GETS ALL USERS ACCOUNTS FROM MONGO AND CREATES LIVE TRADER INSTANCES FOR THOSE ACCOUNTS.
             IF ACCOUNT INSTANCE ALREADY IN SELF.TRADERS DICT, THEN ACCOUNT INSTANCE WILL NOT BE CREATED AGAIN.
         """
@@ -86,7 +86,7 @@ class Main:
                         tdameritrade = TDAmeritrade(
                             self.mongo, user, account_id, self.logger, push_notification)
 
-                        connected = tdameritrade.initialConnect()
+                        connected = await tdameritrade.initialConnect()
 
                         if connected:
                             obj = ApiTrader(user, self.mongo, push_notification, self.logger, int(account_id), tdameritrade)
@@ -101,47 +101,54 @@ class Main:
                 logging.error(e)
 
     @exception_handler
-    def run(self):
-        """ METHOD RUNS THE TWO METHODS ABOVE AND THEN RUNS LIVE TRADER METHOD RUNTRADER FOR EACH INSTANCE.
-        """
-        self.setupTraders()
+    async def run(self):
+        """ Runs the two methods above and then runs live trader method for each instance. """
+        await self.setupTraders()  # Ensure setupTraders is awaited before continuing
 
+        # Now get emails asynchronously
         # !!!!!!!!!!!!!!!!!!!!
         # trade_data = []
-        trade_data = self.gmail.getEmails()
+        trade_data = await self.gmail.getEmails()  # This now works asynchronously
 
-        for api_trader in self.traders.values():
-            api_trader.runTrader(trade_data)
+        if trade_data is not None:
+            for api_trader in self.traders.values():
+                await api_trader.runTrader(trade_data)  # Each trader's runTrader is awaited
+        else:
+            self.logger.error("Failed to retrieve trade data from emails.")
 
 
-    def stop(self):
+    async def stop(self):
         """ Checks for the stop signal file to stop the running loop gracefully. """
         if os.path.isfile(self.stop_signal_file):
             self.logger.info("Stopping...")
             self.running = False
 
             for api_trader in self.traders.values():
-                asyncio.run(api_trader.stop_trader())  # Run each async stop_trader method in its own event loop
+                await api_trader.stop_trader()
 
             os.remove(self.stop_signal_file)  # Remove stop signal file
         else:
-            time.sleep(selectSleep())
+            await asyncio.sleep(selectSleep())
 
 
-
-if __name__ == "__main__":
-    """ START OF SCRIPT.
-        INITIALIZES MAIN CLASS AND STARTS RUN METHOD ON WHILE LOOP WITH A DYNAMIC SLEEP TIME.
-    """
-
+async def main_async():
+    """Main async function to execute logic."""
     main = Main()
 
     connected = main.connectAll()
 
-    while connected and main.running:
-        main.run()
-        main.stop()  # Check if we need to stop the loop
+    if connected:
+        # Run the main async logic in an event loop
+        while main.running:
+            await main.run()  # Await the run method to ensure setupTraders and runTrader are executed properly
+            await main.stop()  # Check if we need to stop the loop
 
-    main.logger.info("Exited loop. Cleaning up...")
-    # Place any additional cleanup code here if necessary
+        main.logger.info("Exited loop. Cleaning up...")
+    else:
+        main.logger.error("Failed to connect. Exiting...")
+
     sys.exit(0)
+
+if __name__ == "__main__":
+    # Call the main async function within the event loop
+    asyncio.run(main_async())
