@@ -490,11 +490,14 @@ class TDAmeritrade:
             last_handler_activity = datetime.now()
             self.logger.debug(f"Activity updated at {last_handler_activity} ({modifiedAccountID(self.account_id)})")
 
-            # Check if quote_handler is a coroutine function
-            if asyncio.iscoroutinefunction(quote_handler):
-                await quote_handler(*args, **kwargs)  # Await if it's asynchronous
-            else:
-                quote_handler(*args, **kwargs)  # Call directly if it's synchronous
+            try:
+                # Check if quote_handler is a coroutine function
+                if asyncio.iscoroutinefunction(quote_handler):
+                    await quote_handler(*args, **kwargs)  # Await if it's asynchronous
+                else:
+                    quote_handler(*args, **kwargs)  # Call directly if it's synchronous
+            except Exception as e:
+                self.logger.error(f"Error in callback {quote_handler}: {e}")
 
         while not (stop_event and stop_event.is_set()):
             try:

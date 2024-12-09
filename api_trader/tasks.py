@@ -101,7 +101,6 @@ class Tasks:
         if new_symbols:
             await self.quote_manager.add_quotes(new_symbols)
 
-    @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
             # Callback function invoked when quotes are updated
             # print(f"Evaluating paper triggers for {symbol}: {quote_data}")

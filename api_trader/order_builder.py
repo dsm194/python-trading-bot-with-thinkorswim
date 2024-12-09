@@ -164,7 +164,7 @@ class OrderBuilderWrapper:
         # Add other strategy types as needed
 
 
-    def standardOrder(self, trade_data, strategy_object, direction, user, account_id, OCOorder=False, use_async=False):
+    async def standardOrder(self, trade_data, strategy_object, direction, user, account_id, OCOorder=False):
 
         order = None
         symbol = trade_data["Symbol"]
@@ -202,7 +202,7 @@ class OrderBuilderWrapper:
             })
 
         # GET QUOTE FOR SYMBOL
-        resp = self.tdameritrade.getQuoteUnified(symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"], use_async=use_async)
+        resp = await self.tdameritrade.getQuoteAsync(symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"])
         
         # if we didn't find the symbol, exit - we can't create the order
         if resp is None:
@@ -280,13 +280,13 @@ class OrderBuilderWrapper:
 
         return order, obj
 
-    def OCOorder(self, trade_data, strategy_object, direction, user, account_id, use_async=False):
+    async def OCOorder(self, trade_data, strategy_object, direction, user, account_id):
 
         # Load the strategy using the new load_strategy method
         strategy = self.load_strategy(strategy_object)
 
         # Call standardOrder to get parent_order and obj
-        order, obj = self.standardOrder(trade_data, strategy_object, direction, user, account_id, OCOorder=True, use_async=use_async)
+        order, obj = await self.standardOrder(trade_data, strategy_object, direction, user, account_id, OCOorder=True)
 
         # Check if parent_order is None
         if order is not None:

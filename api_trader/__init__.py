@@ -113,12 +113,12 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         if order_type == "STANDARD":
 
-            order, obj = self.standardOrder(
-                trade_data, strategy_object, direction, self.user, self.account_id, use_async=True)
+            order, obj = await self.standardOrder(
+                trade_data, strategy_object, direction, self.user, self.account_id)
 
         elif order_type == "OCO":
 
-            order, obj = self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id, use_async=True)
+            order, obj = await self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id)
 
         if order == None and obj == None:
 

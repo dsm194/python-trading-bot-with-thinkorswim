@@ -1,6 +1,7 @@
+import asyncio
 import unittest
 from unittest import mock
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from api_trader import ApiTrader, OrderBuilderWrapper
 from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
 
@@ -280,9 +281,11 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         # (10 * 50) + (5 * 45) + (2 * 3 * 100) + (1 * 4 * 100) = 725 + 600 + 400 = 1725
         self.assertEqual(allocation, 1725)
 
+    def test_standard_order_open_position(self):
+        asyncio.run(self.async_test_standard_order_open_position())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_standard_order_open_position(self, mock_init):
+    async def async_test_standard_order_open_position(self, mock_init):
 
         # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
@@ -317,20 +320,23 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
-        api_trader.tdameritrade.getQuoteUnified.side_effect = [
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock()
+        api_trader.tdameritrade.getQuoteAsync.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 
-        order, obj = api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        order, obj = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         self.assertIsNotNone(order)
         self.assertIsNotNone(obj)
         self.assertEqual(obj['Qty'], 6) # Expect 6 shares (1000 / 150)
         self.assertEqual(obj['Entry_Price'], 150.00)
 
+    def test_standard_order_close_position(self):
+        asyncio.run(self.async_test_standard_order_close_position())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_standard_order_close_position(self, mock_init):
+    async def async_test_standard_order_close_position(self, mock_init):
         
         # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
@@ -364,19 +370,22 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
-        api_trader.tdameritrade.getQuoteUnified.side_effect = [
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock()
+        api_trader.tdameritrade.getQuoteAsync.side_effect = [
             mock_quote_response  # Successful quote response
         ]
 
-        order, obj = api_trader.standardOrder(trade_data, strategy_object, direction='CLOSE POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        order, obj = await api_trader.standardOrder(trade_data, strategy_object, direction='CLOSE POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         self.assertIsNotNone(order)
         self.assertEqual(obj['Exit_Price'], 148.00)
         self.assertEqual(obj['Qty'], 10)
 
+    def test_order_blocked_when_exceeding_max_position_size(self):
+        asyncio.run(self.async_test_order_blocked_when_exceeding_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_order_blocked_when_exceeding_max_position_size(self, mock_init):
+    async def async_test_order_blocked_when_exceeding_max_position_size(self, mock_init):
         # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
             "AAPL": {
@@ -411,14 +420,12 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuoteUnified.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Set current allocated and mock new order size
         api_trader.get_current_strategy_allocation = MagicMock(return_value=4000)
 
-        result = api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         # Verify the order was blocked
         self.assertIsNone(result[0])
@@ -428,9 +435,11 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             f"Strategy status: {strategy_object['Active']}, Shares: 10, Max position size: $5000"
         )
 
+    def test_order_processed_when_within_max_position_size(self):
+        asyncio.run(self.async_test_order_processed_when_within_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_order_processed_when_within_max_position_size(self, mock_init):
+    async def async_test_order_processed_when_within_max_position_size(self, mock_init):
 
         mock_quote_response = {
             "AAPL": {
@@ -464,24 +473,24 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuote.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Set current allocated and mock new order size
         api_trader.get_current_strategy_allocation = MagicMock(return_value=3000)
 
         # Call standardOrder
-        result = api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         # Verify the order was processed
         self.assertIsNotNone(result[0])  # Ensure order is placed
         api_trader.logger.warning.assert_not_called()
         api_trader.logger.error.assert_not_called()
     
+    def test_order_processed_when_at_exact_max_position_size(self):
+        asyncio.run(self.async_test_order_processed_when_at_exact_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_order_processed_when_at_exact_max_position_size(self, mock_init):
+    async def async_test_order_processed_when_at_exact_max_position_size(self, mock_init):
         mock_quote_response = {
             "AAPL": {
                 "quote": {
@@ -514,24 +523,24 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuote.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Set current allocated and mock new order size
         api_trader.get_current_strategy_allocation = MagicMock(return_value=3500)
 
         # Call standardOrder
-        result = api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         # Verify the order was processed
         self.assertIsNotNone(result[0])  # Ensure order is placed
         api_trader.logger.warning.assert_not_called()
         api_trader.logger.error.assert_not_called()
 
+    def test_order_processed_without_max_position_size(self):
+        asyncio.run(self.async_test_order_processed_without_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_order_processed_without_max_position_size(self, mock_init):
+    async def async_test_order_processed_without_max_position_size(self, mock_init):
         # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
             "AAPL": {
@@ -565,23 +574,23 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuote.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Set current allocated and mock new order size
         api_trader.get_current_strategy_allocation = MagicMock(return_value=4000)
 
-        result = api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         # Verify the order was blocked
         self.assertIsNotNone(result[0])
         api_trader.logger.warning.assert_not_called()
         api_trader.logger.error.assert_not_called()
 
+    def test_zero_price_raises_value_error(self):
+        asyncio.run(self.async_test_zero_price_raises_value_error())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_zero_price_raises_value_error(self, mock_init):
+    async def async_test_zero_price_raises_value_error(self, mock_init):
 
          # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
@@ -617,13 +626,11 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
-        api_trader.tdameritrade.getQuoteUnified.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Assert that the ValueError is raised when price is zero
         with self.assertRaises(ValueError):
-            api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+            await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
 
         # Get the actual log message
         log_messages = [call[0][0] for call in api_trader.logger.error.call_args_list]
@@ -635,25 +642,35 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.assertTrue(any(message.startswith(expected_start) for message in log_messages),
                         f"Expected log message starting with '{expected_start}' not found.")
 
+    def test_OCO_order(self):
+        asyncio.run(self.async_test_OCO_order())
 
-    @patch('api_trader.OrderBuilderWrapper.load_strategy')
-    @patch('api_trader.OrderBuilderWrapper.standardOrder')
+    @patch('api_trader.OrderBuilderWrapper.standardOrder', new_callable=AsyncMock)
+    @patch('api_trader.OrderBuilderWrapper.load_strategy', new_callable=MagicMock)
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_OCO_order(self, mock_init, mock_standard_order, mock_load_strategy):
+    async def async_test_OCO_order(self, mock_init, mock_load_strategy, mock_standard_order):
+        # Mock return value for standardOrder
+        parent_order_mock = MagicMock()
+        obj_mock = {"childOrderStrategies": []}
+        mock_standard_order.return_value = (parent_order_mock, obj_mock)
+
+        # Mock return value for load_strategy
         strategy = MagicMock()
+        exit_order_mock = MagicMock()  # Mock the exit order
+        strategy.apply_exit_strategy.return_value = exit_order_mock
         mock_load_strategy.return_value = strategy
-        
+
+        # Trade data and other parameters
         trade_data = {
-            'Symbol': 'AAPL',
-            'Side': 'BUY',
-            'Strategy': 'FixedPercentageExit',
+            "Symbol": "AAPL",
+            "Side": "BUY",
+            "Strategy": "FixedPercentageExit",
         }
-        
         strategy_object = {
-            'Position_Size': 1000,
-            'Order_Type': 'limit',
-            'Position_Type': 'equity',
-            'Active': True
+            "Position_Size": 1000,
+            "Order_Type": "limit",
+            "Position_Type": "equity",
+            "Active": True,
         }
 
         # Mock the response of tdameritrade.getQuote()
@@ -661,37 +678,29 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "AAPL": {
                 "quote": {
                     "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
+                    "bidPrice": 148.00,  # Mock sell price
                 }
             }
         }
-
-        # Mock standardOrder to return a valid parent order and exit order
-        parent_order_mock = MagicMock()  # This should represent a valid OrderBuilder or dict
-        exit_order_mock = MagicMock()  # This should represent a valid OrderBuilder or dict
-
-        # Mock standardOrder to return these mocks as order and some object
-        mock_standard_order.side_effect = [
-            (parent_order_mock, {}),  # First call (parent order)
-            (exit_order_mock, {})     # Second call (exit order)
-        ]
 
         # Instantiate ApiTrader (which calls OrderBuilderWrapper.__init__)
         api_trader = ApiTrader()
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
-        api_trader.tdameritrade.getQuote.side_effect = [
-            mock_quote_response  # Successful quote response
-        ]
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=mock_quote_response)
 
-        # Call the method you want to test
-        order, obj = api_trader.OCOorder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        # Call OCOorder
+        order, obj = await api_trader.OCOorder(
+            trade_data, strategy_object, "OPEN POSITION", api_trader.user, api_trader.account_id
+        )
 
-        # Assert expected outcomes
+        # Assertions
         self.assertIsNotNone(order)
-        self.assertIn('childOrderStrategies', obj)
-        self.assertEqual(len(obj['childOrderStrategies']), 1)
+        self.assertIn("childOrderStrategies", obj)
+        self.assertEqual(len(obj["childOrderStrategies"]), 1)  # Expect 1 exit order
+        self.assertEqual(obj["childOrderStrategies"][0], exit_order_mock)  # Confirm correct exit order
+
 
 
     @patch('api_trader.strategies.trailing_stop_exit.TrailingStopExitStrategy')

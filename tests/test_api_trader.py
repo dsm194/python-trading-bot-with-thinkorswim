@@ -200,7 +200,7 @@ class TestApiTrader(unittest.TestCase):
         # Assert correct order placement behavior
         self.api_trader.logger.warning.assert_not_called()
         self.api_trader.logger.error.assert_not_called()
-        mock_standard_order.assert_called_once_with(trade_data, strategy_object, "OPEN POSITION", self.api_trader.user, self.api_trader.account_id, use_async=True)
+        mock_standard_order.assert_called_once_with(trade_data, strategy_object, "OPEN POSITION", self.api_trader.user, self.api_trader.account_id)
         self.api_trader.tdameritrade.placeTDAOrderUnified.assert_called_once()
         mock_queue_order.assert_called_once()
 
@@ -235,6 +235,10 @@ class TestApiTrader(unittest.TestCase):
         self.api_trader.RUN_LIVE_TRADER = False
         trade_data = create_mock_open_positions(1)[0]
 
+        # Mock quotes
+        mock_quotes_data = create_mock_quotes(1)
+        self.api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=mock_quotes_data)
+
         strategy_object = {"Order_Type": "STANDARD", "Position_Type": "LONG"}
 
         await self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
@@ -264,7 +268,7 @@ class TestApiTrader(unittest.TestCase):
         await self.api_trader.sendOrder(trade_data, strategy_object, "CLOSE POSITION")
 
         # Verify the OCOorder method was called with the correct arguments
-        mock_OCOorder.assert_called_once_with(trade_data, strategy_object, "CLOSE POSITION", self.user, self.account_id, use_async=True)
+        mock_OCOorder.assert_called_once_with(trade_data, strategy_object, "CLOSE POSITION", self.user, self.account_id)
 
         # Construct the expected order details after updates
         updated_obj = {
