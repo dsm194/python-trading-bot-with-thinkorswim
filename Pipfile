@@ -26,6 +26,7 @@ httpx = "*"
 protobuf = "==5.28.2"
 schwab-py = "==1.4.0"
 pip = "*"
+pyjwt = "*"
 
 [requires]
 python_version = "3.8"

@@ -20,7 +20,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 class ApiTrader(Tasks, OrderBuilderWrapper):
 
-    def __init__(self, user, mongo, push, logger, account_id, tdameritrade):
+    def __init__(self, user, mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
         """
         Args:
             user ([dict]): [USER DATA FOR CURRENT INSTANCE]
@@ -55,7 +55,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             self.no_ids_list = []
             
-            self.quote_manager = QuoteManager(tdameritrade, logger)
+            self.quote_manager = quote_manager_pool.get_or_create_manager(tdameritrade, logger)
             self.position_updater = PositionUpdater(self.open_positions, self.logger)
 
             # Initialize parent classes

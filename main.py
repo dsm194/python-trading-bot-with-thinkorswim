@@ -6,6 +6,7 @@ import os
 import sys
 
 from api_trader import ApiTrader
+from api_trader.quote_manager_pool import QuoteManagerPool
 from tdameritrade import TDAmeritrade
 from gmail import Gmail
 from mongo import MongoDB
@@ -60,6 +61,8 @@ class Main:
 
         gmail_connected = self.gmail.connect()
 
+        self.quote_manager_pool = QuoteManagerPool()
+
         if mongo_connected and gmail_connected:
             self.traders = {}
             self.accounts = []
@@ -89,9 +92,9 @@ class Main:
                         connected = await tdameritrade.initialConnect()
 
                         if connected:
-                            obj = ApiTrader(user, self.mongo, push_notification, self.logger, int(account_id), tdameritrade)
+                            obj = ApiTrader(user, self.mongo, push_notification, self.logger, int(account_id), tdameritrade, self.quote_manager_pool)
                             self.traders[account_id] = obj
-                            time.sleep(0.1)
+                            await asyncio.sleep(0.1)
                         else:
                             self.not_connected.append(account_id)
 
