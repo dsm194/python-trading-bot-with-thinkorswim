@@ -1,13 +1,11 @@
 
 # imports
 import asyncio
-import threading
 import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-from api_trader.order_builder import OrderBuilderWrapper
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getUTCDatetime, selectSleep, modifiedAccountID
 from pymongo import UpdateOne
@@ -39,6 +37,12 @@ class Tasks:
         self._cached_market_hours = {}
         self._cached_market_hours_timestamp = 0
 
+        self.task_queue = asyncio.Queue()
+        self.task_status = {
+            'checkOCOtriggers': False,
+            'checkOCOpapertriggers': False
+        }
+
         super().__init__()
 
     async def run_tasks_with_exit_check(self):
@@ -46,8 +50,36 @@ class Tasks:
             f"STARTING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
         while not self.quote_manager.stop_event.is_set():
-            await self.runTasks()
+            task = await self.task_queue.get()  # Get a task from the queue
+            await self.process_task(task)  # Process the task asynchronously
+            self.task_queue.task_done()  # Mark the task as done
 
+    async def process_task(self, task):
+        """ Process the task in an async manner, simulating the original loop iteration. """
+        print(f"Processing task: {task} ({modifiedAccountID(self.account_id)})")
+
+        try:
+            # Task-specific processing
+            if task == 'checkOCOtriggers':
+                await self.checkOCOtriggers()
+            elif task == 'checkOCOpapertriggers':
+                # Run blocking call in a separate thread
+                await asyncio.to_thread(self.checkOCOpapertriggers)
+        finally:
+            # Mark task as complete
+            self.task_status[task] = False
+
+    async def trader_thread_function(self):
+        """ Each trader will submit tasks to the queue for processing by the main event loop. """
+        while not self.quote_manager.stop_event.is_set():
+            # Submit tasks only if they aren't already in progress
+            for task_name in ['checkOCOtriggers', 'checkOCOpapertriggers']:
+                if not self.task_status.get(task_name, False):  # Only submit if not running
+                    self.task_status[task_name] = True
+                    # self.loop.call_soon_threadsafe(self.task_queue.put_nowait, task_name)
+                    await self.task_queue.put(task_name)
+                    
+            await asyncio.sleep(selectSleep())
     
     @exception_handler
     async def checkOCOpapertriggers(self):
@@ -56,7 +88,7 @@ class Tasks:
 
         # Caching market hours for a certain period
         if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:  # Cache for 5 mins
-            self._cached_market_hours = await self.tdameritrade.getMarketHoursUnified(date=dtNow, use_async=True)
+            self._cached_market_hours = await self.tdameritrade.getMarketHoursAsync(date=dtNow)
             self._cached_market_hours_timestamp = time.time()
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
@@ -93,7 +125,7 @@ class Tasks:
             for strategy in strategies:
                 strategy_name = strategy["Strategy"]
                 if strategy_name not in self.strategy_dict:
-                    strategy_object = OrderBuilderWrapper().load_strategy(strategy)
+                    strategy_object = self.load_strategy(strategy)
                     self.strategy_dict[strategy_name] = strategy
                     self.strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
 
@@ -206,7 +238,7 @@ class Tasks:
             return
 
         # Query the order status using the order_id
-        spec_order = await self.tdameritrade.getSpecificOrderUnified(order_id, use_async=True)
+        spec_order = await self.tdameritrade.getSpecificOrderAsync(order_id)
         new_status = spec_order.get("status")
 
         if not new_status:
@@ -358,18 +390,3 @@ class Tasks:
             {"$setOnInsert": obj},
             upsert=True
         )
-
-    async def runTasks(self):
-        """ METHOD RUNS TASKS ON WHILE LOOP EVERY 5 - 60 SECONDS DEPENDING.
-        """
-
-        # RUN TASKS ####################################################
-                
-        # Run synchronous method in a separate thread
-        await self.checkOCOtriggers()
-
-        await self.checkOCOpapertriggers()
-
-        ##############################################################
-        
-        await asyncio.sleep(selectSleep())  # Allows other tasks to run while waiting.

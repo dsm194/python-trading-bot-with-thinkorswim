@@ -1,5 +1,4 @@
 import asyncio
-import threading
 from api_trader.position_updater import PositionUpdater
 from api_trader.quote_manager import QuoteManager
 from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
@@ -10,7 +9,6 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 from pymongo.errors import WriteError, WriteConcernError
-import time
 
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -68,14 +66,10 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
 
             if self.RUN_TASKS:
-                self.loop = asyncio.new_event_loop()
-                # Start the event loop in a background thread
-                self.task_thread = threading.Thread(target=self.start_event_loop_in_thread, daemon=True)
-                self.task_thread.start()
-
-                # Use this new loop to schedule tasks
-                asyncio.run_coroutine_threadsafe(self.run_tasks_with_exit_check(), self.loop)
-                asyncio.run_coroutine_threadsafe(self.position_updater.schedule_batch_update(), self.loop)
+                # Start the event loop in the main thread and process tasks
+                asyncio.create_task(self.run_tasks_with_exit_check())
+                asyncio.create_task(self.trader_thread_function())
+                asyncio.create_task(self.position_updater.schedule_batch_update())
             else:
                 self.logger.info(
                     f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n",
@@ -88,11 +82,6 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
-
-    def start_event_loop_in_thread(self):
-        # Create a new event loop for the background thread
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
 
     async def stop_trader(self):
         await self.quote_manager.stop_streaming()
@@ -127,7 +116,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         # PLACE ORDER IF LIVE TRADER ################################################
         if self.RUN_LIVE_TRADER:
 
-            order_details = await self.tdameritrade.placeTDAOrderUnified(order, use_async=True)
+            order_details = await self.tdameritrade.placeTDAOrderAsync(order)
 
             if not order_details or "Order_ID" not in order_details:
                 # Handle the case where order placement failed
@@ -196,7 +185,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
         for queue_order in queued_orders:
 
-            spec_order = await self.tdameritrade.getSpecificOrderUnified(queue_order["Order_ID"], use_async=True)
+            spec_order = await self.tdameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
 
             # Check if spec_order is None before attempting to access it
             if spec_order is None:
