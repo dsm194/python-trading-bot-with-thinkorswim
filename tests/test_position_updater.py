@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
-from collections import defaultdict
 from api_trader.position_updater import PositionUpdater
 
 
@@ -15,75 +14,93 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
         self.position_updater = PositionUpdater(
             open_positions=self.open_positions_mock,
             logger=self.logger_mock,
-            batch_interval=0.1  # Set a short interval for testing
+            batch_interval=0.1,  # Set a short interval for testing
+            max_workers=2
         )
 
     async def test_queue_max_price_update(self):
-        """Test that max price updates are queued correctly."""
+        """Test max price updates with worker processing."""
+        await self.position_updater.start_workers()  # Start workers
+
+        """Test that max price updates are queued and cached correctly."""
         await self.position_updater.queue_max_price_update("position_1", 150.0)
         await self.position_updater.queue_max_price_update("position_2", 250.0)
 
-        # Verify that updates are stored correctly in the price_updates dictionary
-        self.assertIn("position_1", self.position_updater.price_updates)
-        self.assertEqual(self.position_updater.price_updates["position_1"]["Max_Price"], 150.0)
-        self.assertIn("position_2", self.position_updater.price_updates)
-        self.assertEqual(self.position_updater.price_updates["position_2"]["Max_Price"], 250.0)
+        # Verify cache and queue state
+        self.assertIn("position_1", self.position_updater.update_cache)
+        self.assertEqual(self.position_updater.update_cache["position_1"]["Max_Price"], 150.0)
+        self.assertIn("position_2", self.position_updater.update_cache)
+        self.assertEqual(self.position_updater.update_cache["position_2"]["Max_Price"], 250.0)
+        self.assertEqual(self.position_updater.update_queue.qsize(), 2)
 
-    async def test_flush_updates(self):
-        """Test that queued updates are flushed to MongoDB correctly."""
-        
-        # self.open_positions_mock.bulk_write.return_value = MagicMock(modified_count=2)
-
-        # Queue some updates
+    async def test_worker_processes_updates(self):
+        """Test that the worker processes updates from the queue."""
         await self.position_updater.queue_max_price_update("position_1", 150.0)
         await self.position_updater.queue_max_price_update("position_2", 250.0)
 
-        # Call flush_updates and verify MongoDB bulk_write behavior
-        await self.position_updater.flush_updates()
+        # Mock bulk_write and start a single worker
+        with patch.object(self.open_positions_mock, 'bulk_write', return_value=MagicMock(modified_count=2)):
+            worker_task = asyncio.create_task(self.position_updater.worker())
 
-        # Ensure bulk_write was called with the correct operations
-        self.open_positions_mock.bulk_write.assert_called_once()
-        bulk_operations = self.open_positions_mock.bulk_write.call_args[0][0]
+            # Allow the worker to process the queue
+            await asyncio.sleep(0.3)
+            await self.position_updater.stop()
+            await worker_task
 
-        # Verify the structure of each operation in bulk update
-        self.assertEqual(len(bulk_operations), 2)
-        self.assertEqual(bulk_operations[0]._filter, {"_id": "position_1"})
-        self.assertEqual(bulk_operations[0]._doc["$set"]["Max_Price"], 150.0)
-        self.assertEqual(bulk_operations[1]._filter, {"_id": "position_2"})
-        self.assertEqual(bulk_operations[1]._doc["$set"]["Max_Price"], 250.0)
+            # Verify that bulk_write was called correctly
+            self.open_positions_mock.bulk_write.assert_called_once()
+            bulk_operations = self.open_positions_mock.bulk_write.call_args[0][0]
+            self.assertEqual(len(bulk_operations), 2)
 
-        # Verify price_updates dictionary is cleared after flush
-        self.assertEqual(len(self.position_updater.price_updates), 0)
+    async def test_start_and_stop_workers(self):
+        """Test that multiple workers can start and stop cleanly."""
+        await self.position_updater.start_workers()
 
-    async def test_schedule_batch_update(self):
-        """Test that schedule_batch_update flushes updates at regular intervals."""
-        # Mock flush_updates to observe its calls
-        with patch.object(self.position_updater, 'flush_updates', new_callable=AsyncMock) as mock_flush_updates:
-            # Start the schedule_batch_update loop in the background
-            async def stop_after_delay():
-                await asyncio.sleep(0.3)  # Allow a few intervals to pass
-                await self.position_updater.stop()  # Stop the loop
+        # Verify workers are running
+        self.assertEqual(len(self.position_updater.worker_tasks), 2)
 
-            stop_task = asyncio.create_task(stop_after_delay())
-            await self.position_updater.schedule_batch_update()
-            await stop_task
+        # Stop the workers
+        await self.position_updater.stop()
 
-            # Check that flush_updates was called multiple times
-            self.assertGreaterEqual(mock_flush_updates.call_count, 2)
+        # Verify workers have stopped
+        for task in self.position_updater.worker_tasks:
+            self.assertTrue(task.done())
 
-    async def test_stop_stops_schedule_batch_update(self):
-        """Test that stop() method stops the batch update loop."""
-        with patch.object(self.position_updater, 'flush_updates', new_callable=AsyncMock) as mock_flush_updates:
-            # Start and immediately stop the schedule_batch_update loop
-            stop_task = asyncio.create_task(self.position_updater.schedule_batch_update())
-            await self.position_updater.stop()  # Signal stop
-            await stop_task  # Wait for loop to end
+    async def test_monitor_queue(self):
+        """Test the queue monitoring logs the queue size periodically."""
+        with patch.object(self.logger_mock, 'info') as mock_log:
+            await self.position_updater.start_workers()
 
-            # Ensure flush_updates is not called after stop
-            self.assertTrue(self.position_updater.stop_event.is_set())
+            monitor_task = asyncio.create_task(self.position_updater.monitor_queue())
+
+            # Add some updates and allow monitoring to run
+            await self.position_updater.queue_max_price_update("position_1", 150.0)
+            await asyncio.sleep(0.3)
+            await self.position_updater.stop()
+            await monitor_task
+
+            # Verify logger was called with queue size info
+            mock_log.assert_any_call("Update queue size: 1")
+
+    async def test_worker_handles_exception(self):
+        """Test that the worker logs errors without crashing."""
+        await self.position_updater.queue_max_price_update("position_1", 150.0)
+
+        # Simulate an error in bulk_write
+        with patch.object(self.open_positions_mock, 'bulk_write', side_effect=Exception("Test error")):
+            worker_task = asyncio.create_task(self.position_updater.worker())
+
+            # Allow the worker to process and encounter the error
+            await asyncio.sleep(0.3)
+            await self.position_updater.stop()
+            await worker_task
+
+            # Verify error was logged
+            self.logger_mock.error.assert_called_with("Error during batch update: Test error")
 
     async def asyncTearDown(self):
         await self.position_updater.stop()  # Ensure cleanup
+
 
 # Run the tests
 if __name__ == "__main__":

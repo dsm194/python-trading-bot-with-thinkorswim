@@ -69,7 +69,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 # Start the event loop in the main thread and process tasks
                 asyncio.create_task(self.run_tasks_with_exit_check())
                 asyncio.create_task(self.trader_thread_function())
-                asyncio.create_task(self.position_updater.schedule_batch_update())
+                asyncio.create_task(self.position_updater.start_workers())
+                asyncio.create_task(self.position_updater.monitor_queue())
             else:
                 self.logger.info(
                     f"NOT RUNNING TASKS FOR {self.user['Name']} ({modifiedAccountID(self.account_id)})\n",
@@ -394,6 +395,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         Args:
             trade_data ([list]): CONSISTS OF TWO DICTS TOP LEVEL, AND THEIR VALUES AS LISTS CONTAINING ALL THE TRADE DATA FOR EACH STOCK.
         """
+
+        self.logger.debug("runTrader started with trade_data: %s", trade_data)
 
         # UPDATE ALL ORDER STATUS'S
         await self.updateStatus()
