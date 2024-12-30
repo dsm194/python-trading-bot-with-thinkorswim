@@ -1,4 +1,3 @@
-
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import jwt  # PyJWT library for decoding tokens
@@ -11,17 +10,23 @@ class QuoteManager:
         self.is_streaming = False
         self.callbacks = []  # Callback functions for updates
         self.subscribed_symbols = set()  # Track subscribed symbols
-        self.lock = asyncio.Lock()
-        self.stop_event = asyncio.Event()  # Use asyncio.Event to manage streaming state
-        self.new_data_event = asyncio.Event()  # Event to signal new data
         self.executor = ThreadPoolExecutor(max_workers=10)  # Limit thread pool size
         self.debounce_cache = {}  # Store the latest quote for each symbol
-        self.loop = asyncio.get_event_loop()  # Save the current event loop
         self.underlying_account_id = self._extract_underlying_account_id(self.tdameritrade.async_client.token_metadata.token, self.logger)
+
+        self.loop = asyncio.get_event_loop()  # Obtain the event loop first
+
+        # Now it's safe to create asyncio objects
+        self.lock = asyncio.Lock()
+        self.stop_event = asyncio.Event()
+        self.new_data_event = asyncio.Event()
         self.stream_initialized = asyncio.Event()
+        self.stream_lock = asyncio.Lock()
 
         # Start the debounce cache processor in the background
         self.debounce_task = asyncio.create_task(self._process_debounce_cache())
+
+        assert asyncio.get_event_loop() == self.loop, "QuoteManager is not created with the expected event loop"
 
     @staticmethod
     def _extract_underlying_account_id(token_metadata, logger):
@@ -109,7 +114,7 @@ class QuoteManager:
         for callback in self.callbacks:
             if callback:
                 tasks.append(asyncio.create_task(self._invoke_callback(callback, symbol, quote)))
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
     
     async def _invoke_callback(self, callback, symbol, quote):
         """Invoke a callback, handling both async and sync functions."""
@@ -117,39 +122,56 @@ class QuoteManager:
             if asyncio.iscoroutinefunction(callback):
                 await callback(symbol, quote)
             else:
+                # await asyncio.to_thread(callback, symbol, quote)
                 await asyncio.get_event_loop().run_in_executor(self.executor, callback, symbol, quote)
         except Exception as e:
             self.logger.error(f"Callback error for {symbol}: {e}")
 
     async def _start_quotes_stream(self, symbols):
-        async with self.lock:
-            # Update subscribed symbols with the new structure
-            self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
-            
-        if not self.is_streaming:
+        async with self.stream_lock:  # Prevent overlapping calls
+            if self.is_streaming:
+                return  # Already streaming, no action needed
+
             self.is_streaming = True
 
             try:
-                await self.tdameritrade.start_stream(
-                    symbols,
-                    quote_handler=self.quote_handler, 
-                    max_retries=5,
-                    stop_event = self.stop_event
+                async with self.lock:
+                    # Update subscribed symbols with the new structure
+                    self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
+
+                # Pass stream_initialized to TdAmeritrade.start_stream and run as a background task
+                self.stream_task = asyncio.create_task(
+                    self.tdameritrade.start_stream(
+                        symbols,
+                        quote_handler=self.quote_handler,
+                        max_retries=5,
+                        stop_event=self.stop_event,
+                        initialized_event=self.stream_initialized  # Pass the event here
+                    )
                 )
-            finally:
-                # Signal that the stream is fully initialized
-                self.stream_initialized.set()
+            except Exception as e:
+                self.logger.error(f"Failed to start stream: {e}")
+                self.is_streaming = False  # Reset state on failure
+                raise
+
+
 
     async def _update_stream_subscription(self, new_symbols):
         """Update the stream with new symbols."""
-        # Wait for the stream to be initialized
-        await self.stream_initialized.wait()
-        
-        async with self.lock:
-            self.subscribed_symbols.update(s["symbol"] for s in new_symbols)
+        async with self.stream_lock:  # Prevent concurrent stream operations
+            await self.stream_initialized.wait()
 
-        # Call the update_subscription method with the new structure
-        await self.tdameritrade.update_subscription(new_symbols)
+            async with self.lock:
+                try:
+                    self.subscribed_symbols.update(s["symbol"] for s in new_symbols)
+
+                    # Call the update_subscription method with the new structure
+                    await self.tdameritrade.update_subscription(new_symbols)
+                except Exception as e:
+                    self.logger.error(f"Failed to update stream subscription: {e}")
+                    # Rollback the added symbols on failure
+                    self.subscribed_symbols.difference_update(s["symbol"] for s in new_symbols)
+                    raise
 
     async def add_quotes(self, symbols):
         async with self.lock:
@@ -158,11 +180,18 @@ class QuoteManager:
 
         if new_symbols:
             if self.is_streaming:
-                # Pass the new structure to the update function
-                await self._update_stream_subscription(new_symbols)
+                try:
+                    # Pass the new structure to the update function
+                    await self._update_stream_subscription(new_symbols)
+                except Exception as e:
+                    self.logger.error(f"Failed to update subscription: {e}")
             else:
-                # Pass the new structure to start the stream
-                await self._start_quotes_stream(new_symbols)
+                try:
+                    # Pass the new structure to start the stream
+                    await self._start_quotes_stream(new_symbols)
+                except Exception as e:
+                    self.logger.error(f"Failed to start stream for new quotes: {e}")
+                    raise
 
     async def add_callback(self, callback):
         """Add a new callback."""
@@ -171,9 +200,29 @@ class QuoteManager:
                 self.callbacks.append(callback)
 
     async def stop_streaming(self):
-        """Stop streaming quotes."""
-        if self.is_streaming:
-            self.is_streaming = False
-            self.stop_event.set()   # Signal stop to the background task    
-            self.new_data_event.set()  # Wake up the task if waiting
-            await self.debounce_task  # Wait for the task to finish
+        """Stops streaming and performs cleanup."""
+        if not self.is_streaming:
+            return  # Stream is already stopped
+
+        self.is_streaming = False
+        self.stop_event.set()  # Signal all waiting tasks to stop
+        self.new_data_event.set()  # Ensure any waiting tasks are woken up
+
+        # Wait for debounce task to finish and clean up resources
+        if self.debounce_task:
+            await self.debounce_task  # Wait for the debounce task to finish
+
+        # Attempt to disconnect the streaming service
+        try:
+            self.logger.debug("Disconnecting streaming...")
+            if hasattr(self, 'tdameritrade') and self.tdameritrade:
+                await asyncio.wait_for(self.tdameritrade.disconnect_streaming(), timeout=2)
+                self.logger.debug("Streaming disconnected successfully.")
+        except asyncio.TimeoutError:
+            self.logger.warning("Streaming logout timed out.")
+        except Exception as e:
+            self.logger.error(f"Error during streaming disconnect: {e}")
+
+        # Properly shut down the executor
+        self.executor.shutdown(wait=True)
+        self.logger.info("Streaming stopped and resources cleaned up.")

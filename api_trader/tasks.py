@@ -64,7 +64,7 @@ class Tasks:
                 await self.checkOCOtriggers()
             elif task == 'checkOCOpapertriggers':
                 # Run blocking call in a separate thread
-                await asyncio.to_thread(self.checkOCOpapertriggers)
+                await self.checkOCOpapertriggers()
         finally:
             # Mark task as complete
             self.task_status[task] = False

@@ -1,11 +1,14 @@
+import asyncio
 from api_trader.quote_manager import QuoteManager
 
 
 class QuoteManagerPool:
-    def __init__(self):
+    def __init__(self, loop):
         self.managers = {}
+        self.loop = loop
 
     def get_or_create_manager(self, tdameritrade, logger, callback=None):
+        asyncio.set_event_loop(self.loop)
         # Extract the underlying account ID
         account_id = QuoteManager._extract_underlying_account_id(tdameritrade.async_client.token_metadata.token, logger)
 
