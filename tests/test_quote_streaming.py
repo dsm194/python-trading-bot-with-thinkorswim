@@ -32,7 +32,7 @@ class TestQuoteStreaming(unittest.IsolatedAsyncioTestCase):
         self.quote_manager = QuoteManager(self.td_ameritrade, self.logger_mock)
 
         # Create mock open_positions and initialize PositionUpdater
-        self.open_positions = MagicMock()  # Mock for open positions data
+        self.open_positions = AsyncMock()  # Mock for open positions data
         self.position_updater = PositionUpdater(self.open_positions, self.logger_mock)  # Instantiate PositionUpdater
 
         # Mock stream client behavior

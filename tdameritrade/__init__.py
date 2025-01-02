@@ -100,7 +100,7 @@ class TDAmeritrade:
             time_remaining = expires_at - current_time
 
             if time_remaining > 0:
-                # self.logger.info(f"Token is valid. Time remaining: {time_remaining} seconds.")
+                self.logger.debug(f"Token is valid. Time remaining: {time_remaining} seconds.")
                 return True
             else:
                 self.logger.warning("Token has expired or is about to expire.")
@@ -116,13 +116,15 @@ class TDAmeritrade:
             self.async_client = client_from_manual_flow(API_KEY, APP_SECRET, CALLBACK_URL, token_path, asyncio=True)
 
         if not self.async_client:
-            self.logger.error(f"Failed to initialize client. ({modifiedAccountID(self.account_id)})")
+            self.logger.error(f"Failed to initialize clients. ({modifiedAccountID(self.account_id)})")
             return False
 
         # Update token expiration and async/stream clients
         tokenSeconds = self.async_client.token_metadata.token.get("expires_in", 3600)
         self.token_expiration = datetime.now() + timedelta(seconds=tokenSeconds)
-        self.stream_client = self.stream_client or StreamClient(client=self.async_client)
+
+        if not self.stream_client:
+            self.stream_client = StreamClient(client=self.async_client)
 
         # ADD NEW TOKEN DATA TO USER DATA IN DB
         self.users.update_one({"Name": self.user["Name"]}, {
@@ -279,13 +281,16 @@ class TDAmeritrade:
                 else:
                     # self.logger.debug(f"Current event loop in getQuoteAsync: {asyncio.get_event_loop()} ({modifiedAccountID(self.account_id)})")
                     # response = await self.async_client.get_quote(symbol)
-                    self.logger.debug(f"Calling get_quote for symbol: {symbol} ({modifiedAccountID(self.account_id)})")
                     try:
+                        self.logger.debug(f"Starting get_quote for {symbol} ({modifiedAccountID(self.account_id)})")
                         response = await self.async_client.get_quote(symbol)
-                    except Exception as e:
-                        self.logger.error(f"Error in get_quote: {e} ({modifiedAccountID(self.account_id)})")
+                        self.logger.debug(f"Received response for {symbol} ({modifiedAccountID(self.account_id)}): {response}")
+                    except asyncio.CancelledError as e:
+                        self.logger.error(f"get_quote for {symbol} was cancelled. ({modifiedAccountID(self.account_id)}): {e}")
                         raise
-
+                    except Exception as e:
+                        self.logger.error(f"Exception during get_quote for {symbol} ({modifiedAccountID(self.account_id)}): {e}")
+                        raise
 
                 # Check if the response status is not 200
                 if response.status_code != 200:
@@ -302,25 +307,9 @@ class TDAmeritrade:
             return None
 
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None):
         retries = 0
-        last_handler_activity = datetime.now()
-
-        async def call_quote_handler(*args, **kwargs):
-            """Handle quote callback logic."""
-            nonlocal last_handler_activity
-            last_handler_activity = datetime.now()
-            self.logger.debug(f"Activity updated at {last_handler_activity} ({modifiedAccountID(self.account_id)})")
-            try:
-                if asyncio.iscoroutinefunction(quote_handler):
-                    loop = asyncio.get_running_loop()  # Ensure running loop
-                    await asyncio.wrap_future(
-                        asyncio.run_coroutine_threadsafe(quote_handler(*args, **kwargs), loop)
-                    )
-                else:
-                    quote_handler(*args, **kwargs)  # Sync handler
-            except Exception as e:
-                self.logger.error(f"Error in quote_handler: {e} ({modifiedAccountID(self.account_id)})")
+        self.logger.info(f"Starting stream for symbols: {symbols} ({modifiedAccountID(self.account_id)})")
 
         async def reconnect():
             """Reconnect logic with exponential backoff."""
@@ -328,11 +317,52 @@ class TDAmeritrade:
             retries += 1
             if retries > max_retries:
                 self.logger.error("Max retries reached. Stopping reconnection attempts.")
-                return False  # Signal to stop retries
+                return False
             sleep_time = min(2 ** retries, 60)
             self.logger.warning(f"Reconnecting in {sleep_time}s (retry {retries}/{max_retries})...")
             await asyncio.sleep(sleep_time)
-            return True  # Continue retries
+            return True
+
+        async def stream_messages():
+            """Stream messages continuously."""
+            while not (stop_event and stop_event.is_set()):
+                try:
+                    # Wrap handle_message in a task
+                    message_task = asyncio.create_task(self.stream_client.handle_message())
+                    stop_event_task = asyncio.create_task(stop_event.wait())
+
+                    # Wait for either the message task or stop_event
+                    done, pending = await asyncio.wait(
+                        [message_task, stop_event_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    # Cancel remaining tasks
+                    for task in pending:
+                        task.cancel()
+
+                    # If stop_event is set, exit gracefully
+                    if stop_event.is_set():
+                        self.logger.info("Stop event triggered during streaming.")
+                        break
+
+                    # Check if handle_message raised an exception
+                    for task in done:
+                        if task is message_task and task.exception():
+                            raise task.exception()
+
+                except asyncio.TimeoutError:
+                    self.logger.warning("Timeout waiting for messages.")
+                except websockets.exceptions.ConnectionClosedError as e:
+                    self.logger.warning(f"WebSocket connection closed: {e}")
+                    break
+                except asyncio.CancelledError:
+                    self.logger.info("Stream messages task was cancelled.")
+                    break
+                except Exception as e:
+                    self.logger.error(f"Unexpected error during message handling: {e}")
+                    break
+
 
         while not (stop_event and stop_event.is_set()):
             try:
@@ -340,50 +370,15 @@ class TDAmeritrade:
                 await self._safe_connect_to_streaming()
                 retries = 0  # Reset retries on successful connection
 
-                # Step 2: Prepare symbols and register handlers
-                equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
-                option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
+                # Step 2: Register handlers and subscribe
+                await self._register_and_subscribe(symbols, quote_handler)
 
-                async with self.lock:
-                    if equity_symbols:
-                        if quote_handler not in self.registered_handlers["equity"]:
-                            self.stream_client.add_level_one_equity_handler(call_quote_handler)
-                            self.registered_handlers["equity"].add(quote_handler)
-                        await self.stream_client.level_one_equity_add(equity_symbols, fields=[
-                            StreamClient.LevelOneEquityFields.SYMBOL,
-                            StreamClient.LevelOneEquityFields.BID_PRICE,
-                            StreamClient.LevelOneEquityFields.ASK_PRICE,
-                            StreamClient.LevelOneEquityFields.LAST_PRICE,
-                            StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
-                        ])
+                # Signal that the stream has been initialized
+                if initialized_event and not initialized_event.is_set():
+                    initialized_event.set()
 
-                    if option_symbols:
-                        if quote_handler not in self.registered_handlers["option"]:
-                            self.stream_client.add_level_one_option_handler(call_quote_handler)
-                            self.registered_handlers["option"].add(quote_handler)
-                        await self.stream_client.level_one_option_add(option_symbols, fields=[
-                            StreamClient.LevelOneOptionFields.SYMBOL,
-                            StreamClient.LevelOneOptionFields.BID_PRICE,
-                            StreamClient.LevelOneOptionFields.ASK_PRICE,
-                            StreamClient.LevelOneOptionFields.LAST_PRICE,
-                        ])
-
-                # Step 3: Stream messages
-                while not (stop_event and stop_event.is_set()):
-                    self.logger.debug(f"Waiting for messages... ({modifiedAccountID(self.account_id)})")
-                    try:
-                        await asyncio.wait_for(self.stream_client.handle_message(), timeout=15)
-                    except asyncio.TimeoutError:
-                        self.logger.warning(f"Timeout waiting for messages. Checking activity... ({modifiedAccountID(self.account_id)})")
-                    except Exception as e:
-                        self.logger.error(f"Error during message handling: {e} ({modifiedAccountID(self.account_id)})")
-                        break
-
-                    # Check for handler inactivity
-                    if datetime.now() - last_handler_activity > timedelta(minutes=5):   #TODO - change back to 5 mins, or increase to 10??
-                        self.logger.warning(f"Handler timeout detected. Last activity: {last_handler_activity} ({modifiedAccountID(self.account_id)})")
-                        last_handler_activity = datetime.now()
-                        break
+                # Step 3: Stream messages in the background
+                await stream_messages()
 
             except websockets.ConnectionClosedError as e:
                 self.logger.warning(f"Connection closed: {e} ({modifiedAccountID(self.account_id)})")
@@ -402,6 +397,34 @@ class TDAmeritrade:
 
         self.logger.info("Streaming stopped.")
 
+    async def _register_and_subscribe(self, symbols, quote_handler):
+        """Register handlers and subscribe to symbols."""
+        equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
+        option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
+
+        async with self.lock:
+            if equity_symbols:
+                if quote_handler not in self.registered_handlers["equity"]:
+                    self.stream_client.add_level_one_equity_handler(quote_handler)
+                    self.registered_handlers["equity"].add(quote_handler)
+                await self.stream_client.level_one_equity_add(equity_symbols, fields=[
+                    StreamClient.LevelOneEquityFields.SYMBOL,
+                    StreamClient.LevelOneEquityFields.BID_PRICE,
+                    StreamClient.LevelOneEquityFields.ASK_PRICE,
+                    StreamClient.LevelOneEquityFields.LAST_PRICE,
+                    StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+                ])
+
+            if option_symbols:
+                if quote_handler not in self.registered_handlers["option"]:
+                    self.stream_client.add_level_one_option_handler(quote_handler)
+                    self.registered_handlers["option"].add(quote_handler)
+                await self.stream_client.level_one_option_add(option_symbols, fields=[
+                    StreamClient.LevelOneOptionFields.SYMBOL,
+                    StreamClient.LevelOneOptionFields.BID_PRICE,
+                    StreamClient.LevelOneOptionFields.ASK_PRICE,
+                    StreamClient.LevelOneOptionFields.LAST_PRICE,
+                ])
 
     async def _clean_up_handler(self, quote_handler):
         async with self.lock:
@@ -412,7 +435,6 @@ class TDAmeritrade:
             self.logger.debug(f"After cleanup: {self.registered_handlers} ({modifiedAccountID(self.account_id)})")
             self.logger.info(f"Handler {quote_handler} removed from registered_handlers. ({modifiedAccountID(self.account_id)})")
 
-
     @exception_handler
     async def update_subscription(self, symbols):
         self.logger.debug(f"Updating subscription with symbols: {symbols}")
@@ -420,32 +442,33 @@ class TDAmeritrade:
         equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
         option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
         
-        if equity_symbols:
-            self.logger.debug(f"Subscribing to equity symbols: {equity_symbols}")
-            await self.stream_client.level_one_equity_add(
-                symbols=equity_symbols,
-                fields=[
-                    StreamClient.LevelOneEquityFields.SYMBOL,
-                    StreamClient.LevelOneEquityFields.BID_PRICE,
-                    StreamClient.LevelOneEquityFields.ASK_PRICE,
-                    StreamClient.LevelOneEquityFields.LAST_PRICE,
-                    StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE,
-                ],
-            )
-            self.logger.debug(f"Successfully subscribed to equity symbols: {equity_symbols}")
-        
-        if option_symbols:
-            self.logger.debug(f"Subscribing to option symbols: {option_symbols}")
-            await self.stream_client.level_one_option_add(
-                symbols=option_symbols,
-                fields=[
-                    StreamClient.LevelOneOptionFields.SYMBOL,
-                    StreamClient.LevelOneOptionFields.BID_PRICE,
-                    StreamClient.LevelOneOptionFields.ASK_PRICE,
-                    StreamClient.LevelOneOptionFields.LAST_PRICE,
-                ],
-            )
-            self.logger.debug(f"Successfully subscribed to option symbols: {option_symbols}")
+        async with self.lock:  # Ensure thread-safety
+            if equity_symbols:
+                self.logger.debug(f"Subscribing to equity symbols: {equity_symbols}")
+                await self.stream_client.level_one_equity_add(
+                    symbols=equity_symbols,
+                    fields=[
+                        StreamClient.LevelOneEquityFields.SYMBOL,
+                        StreamClient.LevelOneEquityFields.BID_PRICE,
+                        StreamClient.LevelOneEquityFields.ASK_PRICE,
+                        StreamClient.LevelOneEquityFields.LAST_PRICE,
+                        StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE,
+                    ],
+                )
+                self.logger.debug(f"Successfully subscribed to equity symbols: {equity_symbols}")
+            
+            if option_symbols:
+                self.logger.debug(f"Subscribing to option symbols: {option_symbols}")
+                await self.stream_client.level_one_option_add(
+                    symbols=option_symbols,
+                    fields=[
+                        StreamClient.LevelOneOptionFields.SYMBOL,
+                        StreamClient.LevelOneOptionFields.BID_PRICE,
+                        StreamClient.LevelOneOptionFields.ASK_PRICE,
+                        StreamClient.LevelOneOptionFields.LAST_PRICE,
+                    ],
+                )
+                self.logger.debug(f"Successfully subscribed to option symbols: {option_symbols}")
 
 
     async def _safe_connect_to_streaming(self, retries=3, delay=5):
@@ -484,10 +507,19 @@ class TDAmeritrade:
     async def disconnect_streaming(self):
         try:
             self.logger.debug(f"Attempting to log out of the streaming service. ({modifiedAccountID(self.account_id)})")
-            await self.stream_client.logout()
-            self.logger.debug(f"Successfully logged out of the streaming service. ({modifiedAccountID(self.account_id)})")
+            try:
+                # Timeout on the logout process
+                await asyncio.wait_for(self.stream_client.logout(), timeout=3)
+                self.logger.debug(f"Successfully logged out of the streaming service. ({modifiedAccountID(self.account_id)})")
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout during logout. Forcing WebSocket closure.")
+                if hasattr(self.stream_client, "_socket") and self.stream_client._socket:
+                    self.logger.debug("Forcing WebSocket close.")
+                    await self.stream_client._socket.close()
         except Exception as e:
             self.logger.warning(f"Suppressed exception during logout: {e}")
+        finally:
+            self.logger.debug("Finished disconnect_streaming.")
         
     async def getSpecificOrderAsync(self, id):
         """ METHOD GETS A SPECIFIC ORDER INFO

@@ -7,7 +7,7 @@ from api_trader.position_updater import PositionUpdater
 class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         # Mock MongoDB collection and logger
-        self.open_positions_mock = MagicMock()
+        self.open_positions_mock = AsyncMock()
         self.logger_mock = MagicMock()
 
         # Initialize PositionUpdater with mock dependencies
@@ -39,7 +39,7 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
         await self.position_updater.queue_max_price_update("position_2", 250.0)
 
         # Mock bulk_write and start a single worker
-        with patch.object(self.open_positions_mock, 'bulk_write', return_value=MagicMock(modified_count=2)):
+        with patch.object(self.open_positions_mock, 'bulk_write', return_value=AsyncMock(modified_count=2)):
             worker_task = asyncio.create_task(self.position_updater.worker())
 
             # Allow the worker to process the queue
@@ -80,7 +80,7 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
             await monitor_task
 
             # Verify logger was called with queue size info
-            mock_log.assert_any_call("Update queue size: 1")
+            mock_log.assert_any_call("Update queue size: 1, Cache size: 1")
 
     async def test_worker_handles_exception(self):
         """Test that the worker logs errors without crashing."""

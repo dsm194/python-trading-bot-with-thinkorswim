@@ -5,11 +5,11 @@ import time
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import httpx
 
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getUTCDatetime, selectSleep, modifiedAccountID
 from pymongo import UpdateOne
-from pymongo.errors import BulkWriteError
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -76,49 +76,53 @@ class Tasks:
             for task_name in ['checkOCOtriggers', 'checkOCOpapertriggers']:
                 if not self.task_status.get(task_name, False):  # Only submit if not running
                     self.task_status[task_name] = True
-                    # self.loop.call_soon_threadsafe(self.task_queue.put_nowait, task_name)
                     await self.task_queue.put(task_name)
                     
             await asyncio.sleep(selectSleep())
     
     @exception_handler
     async def checkOCOpapertriggers(self):
-        # Are we during market hours?
+
         dtNow = getUTCDatetime()
 
-        # Caching market hours for a certain period
-        if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:  # Cache for 5 mins
-            self._cached_market_hours = await self.tdameritrade.getMarketHoursAsync(date=dtNow)
-            self._cached_market_hours_timestamp = time.time()
+        # Protect cached market hours access
+        async with self.lock:
+            if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:
+                self._cached_market_hours = await self.tdameritrade.getMarketHoursAsync(date=dtNow)
+                self._cached_market_hours_timestamp = time.time()
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
 
         # Fetch all open positions for the trader and the paper account in one query
-        open_positions = list(self.open_positions.find({
-            "Trader": self.user["Name"], 
-            "Account_ID": self.account_id, 
-            "Account_Position": "Paper", 
-            # "Strategy": {"$in": ["ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG", "ATRHIGHSMABREAKOUTSFILTER_DEBUG", "MACD_XVER_8_17_9_EXP_DEBUG"]}
-        }))
+        open_positions = await self.async_mongo.open_positions.find({
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Account_Position": "Paper",
+            # "Strategy": {
+            #     "$in": [
+            #         "ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG",
+            #         "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG",
+            #         "ATRHIGHSMABREAKOUTSFILTER_DEBUG",
+            #         "MACD_XVER_8_17_9_EXP_DEBUG"
+            #     ]
+            # }
+        }).to_list(None)  # Convert cursor to a list
 
         # Fetch strategies from MongoDB and add any new strategies to the class-level dictionary
         strategies = self.strategies.find({"Account_ID": self.account_id})
 
-        # Group positions by symbol to minimize the number of API calls
-        async with self.lock:  # Lock during modification
-            # Create a mapping for new symbols with asset types
+        # Group positions by symbol and minimize API calls
+        async with self.lock:
             new_symbols = []
             for position in open_positions:
                 symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
-                # Check if the symbol is not already subscribed
                 if symbol not in self.positions_by_symbol:
                     self.positions_by_symbol[symbol] = []
                     new_symbols.append({"symbol": symbol, "asset_type": position["Asset_Type"]})
-                # Ensure the position isn't already in the list
                 if position not in self.positions_by_symbol[symbol]:
                     self.positions_by_symbol[symbol].append(position)
 
-            # Optionally deduplicate new_symbols if necessary
+            # Deduplicate new symbols
             seen = set()
             new_symbols = [ns for ns in new_symbols if (ns["symbol"] not in seen and not seen.add(ns["symbol"]))]
 
@@ -129,9 +133,16 @@ class Tasks:
                     self.strategy_dict[strategy_name] = strategy
                     self.strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
 
-        # Pass the symbols to the QuoteManager
+        # Pass symbols to the QuoteManager
         if new_symbols:
-            await self.quote_manager.add_quotes(new_symbols)
+            try:
+                await self.quote_manager.add_quotes(new_symbols)
+            except httpx.ReadTimeout as e:
+                self.logger.error(f"ReadTimeout occurred while adding quotes: {e}")
+            except httpx.ConnectTimeout as e:
+                self.logger.error(f"ConnectTimeout occurred while adding quotes: {e}")
+            except Exception as e:
+                self.logger.error(f"An unexpected error occurred in add_quotes: {e}")
 
     async def evaluate_paper_triggers(self, symbol, quote_data):
             # Callback function invoked when quotes are updated
@@ -194,16 +205,15 @@ class Tasks:
         """Checks OCO triggers (stop loss/ take profit) to see if either one has filled. 
         If so, closes the position in MongoDB accordingly.
         """
-
-        open_positions = self.open_positions.find({
-            "Trader": self.user["Name"],
-            "Account_ID": self.account_id,
-            "Order_Type": "OCO"
-        })
-
         bulk_updates = []
         rejected_inserts = []
         canceled_inserts = []
+
+        open_positions = await self.async_mongo.open_positions.find({
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Order_Type": "OCO"
+        }).to_list(None)  # Convert cursor to a list
 
         for position in open_positions:
             # Handle the different formats of childOrderStrategies (list or dict)
@@ -211,7 +221,7 @@ class Tasks:
             if not child_orders:
                 self.logger.warning(f"No childOrderStrategies found for position {position['Symbol']}")
                 continue
-            
+
             # Convert to list if it's in a dict format
             if isinstance(child_orders, dict):
                 child_orders = [child_orders]  # Convert to list for uniform processing
@@ -222,15 +232,15 @@ class Tasks:
                 if "childOrderStrategies" in child_order:
                     # Recursively process the OCO child orders
                     for nested_order in child_order["childOrderStrategies"]:
-                        await self.process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
+                        await self._process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
                 else:
                     # Process regular child order
-                    await self.process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
+                    await self._process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
 
-        # Execute bulk updates and inserts
-        self.apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
+        # Execute bulk updates and inserts asynchronously
+        await self._apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
 
-    async def process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
+    async def _process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
         """Processes individual child orders and updates status."""
         order_id = child_order.get("Order_ID")
         if not order_id:
@@ -246,16 +256,16 @@ class Tasks:
                 self.logger.warning(f"No status found for order_id: {order_id}")
             return
 
-        # If the order is filled, process the position and stop further checks
+        # Handle FILLED status
         if new_status == "FILLED":
             position["Direction"] = "CLOSE POSITION"
             position["Side"] = child_order.get("Side", "SELL")
 
-            self.pushOrder(position, spec_order)
+            await self.pushOrder(position, spec_order)
             self.logger.info(f"Order {order_id} for {position['Symbol']} filled")
             return
 
-        # Handle rejected or canceled orders
+        # Handle REJECTED or CANCELED status
         elif new_status in ["CANCELED", "REJECTED"]:
             other = {
                 "Symbol": position["Symbol"],
@@ -278,43 +288,53 @@ class Tasks:
             )
         else:
             # Use array filters to update the specific child order's status based on Order_ID
-            updates = {
+            filter_query = {
+                "Trader": self.user["Name"],
+                "Account_ID": self.account_id,
+                "Symbol": position["Symbol"],
+                "Strategy": position["Strategy"]
+            }
+
+            update_query = {
                 "$set": {
                     "childOrderStrategies.$[orderElem].Order_Status": new_status
                 }
             }
 
-            # Use array filters to match the element with the correct Order_ID
             array_filters = [{"orderElem.Order_ID": order_id}]
-            
+
+            # Append to bulk_updates for later execution via bulk_write
             bulk_updates.append(
                 UpdateOne(
-                    {
-                        "Trader": self.user["Name"],
-                        "Account_ID": self.account_id,
-                        "Symbol": position["Symbol"],
-                        "Strategy": position["Strategy"]
-                    },
-                    updates,
+                    filter_query,
+                    update_query,
                     upsert=False,
                     array_filters=array_filters
                 )
             )
 
-    def apply_bulk_updates(self, bulk_updates, rejected_inserts, canceled_inserts):
-        """Applies bulk updates and inserts to MongoDB."""
+    async def _apply_bulk_updates(self, bulk_updates, rejected_inserts, canceled_inserts):
+        """Executes bulk updates and inserts asynchronously."""
         if bulk_updates:
             try:
-                self.open_positions.bulk_write(bulk_updates)
-            except BulkWriteError as e:
-                self.logger.error(f"Bulk write error: {e.details}")
+                result = await self.async_mongo.open_positions.bulk_write(bulk_updates)
+                self.logger.info(f"Bulk update complete: {result.modified_count} documents modified.")
+            except Exception as e:
+                self.logger.error(f"Error during bulk update: {e}")
 
         if rejected_inserts:
-            self.rejected.insert_many(rejected_inserts)
+            try:
+                await self.async_mongo.rejected.insert_many(rejected_inserts)
+                self.logger.info(f"Inserted {len(rejected_inserts)} rejected orders.")
+            except Exception as e:
+                self.logger.error(f"Error inserting rejected orders: {e}")
+
         if canceled_inserts:
-            self.canceled.insert_many(canceled_inserts)
-
-
+            try:
+                await self.async_mongo.canceled.insert_many(canceled_inserts)
+                self.logger.info(f"Inserted {len(canceled_inserts)} canceled orders.")
+            except Exception as e:
+                self.logger.error(f"Error inserting canceled orders: {e}")
 
     @exception_handler
     def extractOCOchildren(self, spec_order):

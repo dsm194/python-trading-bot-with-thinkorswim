@@ -10,7 +10,6 @@ from pathlib import Path
 import os
 from pymongo.errors import WriteError, WriteConcernError
 
-
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 path = Path(THIS_FOLDER)
@@ -20,7 +19,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 class ApiTrader(Tasks, OrderBuilderWrapper):
 
-    def __init__(self, user, mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
+    def __init__(self, user, mongo, async_mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
         """
         Args:
             user ([dict]): [USER DATA FOR CURRENT INSTANCE]
@@ -39,6 +38,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             # Instance variables
             self.user = user
             self.mongo = mongo
+            self.async_mongo = async_mongo
             self.push = push
             self.logger = logger
             self.account_id = account_id
@@ -56,7 +56,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.no_ids_list = []
             
             self.quote_manager = quote_manager_pool.get_or_create_manager(tdameritrade, logger)
-            self.position_updater = PositionUpdater(self.open_positions, self.logger)
+            self.position_updater = PositionUpdater(self.async_mongo.open_positions, self.logger)
 
             # Initialize parent classes
             Tasks.__init__(self, self.quote_manager, self.position_updater)
@@ -91,98 +91,119 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
     # STEP ONE
     @exception_handler
     async def sendOrder(self, trade_data, strategy_object, direction):
+        """Processes and sends an order based on trade data, strategy, and direction.
+
+        Args:
+            trade_data (dict): Trade data for the order.
+            strategy_object (dict): Strategy configuration.
+            direction (str): "OPEN POSITION" or "CLOSE POSITION".
+        """
         from schwab.utils import Utils
 
         symbol = trade_data["Symbol"]
-
         strategy = trade_data["Strategy"]
-
         side = trade_data["Side"]
-
         order_type = strategy_object["Order_Type"]
 
+        # Generate the order and object based on the order type
         if order_type == "STANDARD":
-
             order, obj = await self.standardOrder(
-                trade_data, strategy_object, direction, self.user, self.account_id)
-
+                trade_data, strategy_object, direction, self.user, self.account_id
+            )
         elif order_type == "OCO":
-
-            order, obj = await self.OCOorder(trade_data, strategy_object, direction, self.user, self.account_id)
-
-        if order == None and obj == None:
-
+            order, obj = await self.OCOorder(
+                trade_data, strategy_object, direction, self.user, self.account_id
+            )
+        else:
+            self.logger.error(f"Unsupported order type: {order_type}")
             return
 
-        # PLACE ORDER IF LIVE TRADER ################################################
+        if order is None or obj is None:
+            self.logger.warning(f"Order creation failed for {symbol}.")
+            return
+
+        # Place live trade orders
         if self.RUN_LIVE_TRADER:
+            try:
+                order_details = await self.tdameritrade.placeTDAOrderAsync(order)
 
-            order_details = await self.tdameritrade.placeTDAOrderAsync(order)
+                if not order_details or "Order_ID" not in order_details:
+                    # Handle failed order placement
+                    error_message = order_details.get("error", "Unknown error") if order_details else "No response"
+                    other = {
+                        "Symbol": symbol,
+                        "Order_Type": side,
+                        "Order_Status": "REJECTED",
+                        "Strategy": strategy,
+                        "Trader": self.user["Name"],
+                        "Date": getUTCDatetime(),
+                        "Account_ID": self.account_id,
+                    }
+                    await self.async_mongo.rejected.insert_one(other)
 
-            if not order_details or "Order_ID" not in order_details:
-                # Handle the case where order placement failed
-                error_message = (order_details.json()).get("error", "Unknown error")
-                other = {
-                    "Symbol": symbol,
-                    "Order_Type": side,
-                    "Order_Status": "REJECTED",
-                    "Strategy": strategy,
-                    "Trader": self.user["Name"],
-                    "Date": getUTCDatetime(),
-                    "Account_ID": self.account_id
-                }
+                    self.logger.error(
+                        f"Order rejected for {symbol} ({modifiedAccountID(self.account_id)}) - Reason: {error_message}"
+                    )
+                    return
 
-                self.logger.info(
-                    f"{symbol} Rejected For {self.user['Name']} ({modifiedAccountID(self.account_id)}) - Reason: {error_message} ")
+                # Update order object with live trade details
+                obj.update(order_details)
+                obj["Account_Position"] = "Live"
 
-                self.rejected.insert_one(other)
+            except Exception as e:
+                self.logger.error(
+                    f"Exception while placing live order for {symbol}: {e}"
+                )
                 return
-
-            # Use the fully populated order details
-            # Need to revisit this.  
-            obj.update(order_details)
-            obj["Account_Position"] = "Live"
         else:
-            assign_order_ids(obj)
+            # Simulate a paper trade
+            assign_order_ids(obj)  # Ensure this function handles async or thread-safe behavior if needed
             obj["Account_Position"] = "Paper"
-            
 
+        # Mark order as queued and add to the queue collection
         obj["Order_Status"] = "QUEUED"
+        await self.queueOrder(obj)
 
-        self.queueOrder(obj)
+        # Log the outcome
+        trade_type = "Live Trade" if self.RUN_LIVE_TRADER else "Paper Trade"
+        self.logger.info(
+            f"{trade_type}: {side} order for symbol {symbol} ({modifiedAccountID(self.account_id)})"
+        )
 
-        response_msg = f"{'Live Trade' if self.RUN_LIVE_TRADER else 'Paper Trade'}: {side} Order for Symbol {symbol} ({modifiedAccountID(self.account_id)})"
-
-        self.logger.info(response_msg)
 
     # STEP TWO
     @exception_handler
-    def queueOrder(self, order):
-        """ METHOD FOR QUEUEING ORDER TO QUEUE COLLECTION IN MONGODB
+    async def queueOrder(self, order):
+        """Asynchronous method for queuing an order to the queue collection in MongoDB.
 
         Args:
-            order ([dict]): [ORDER DATA TO BE PLACED IN QUEUE COLLECTION]
+            order (dict): Order data to be placed in the queue collection.
         """
-        # ADD TO QUEUE WITHOUT ORDER ID AND STATUS
-        self.queue.update_one(
-            {"Trader": self.user["Name"], "Account_ID": order["Account_ID"], "Symbol": order["Symbol"], "Strategy": order["Strategy"]}, {"$set": order}, upsert=True)
+        # Asynchronously update or insert into the queue
+        await self.async_mongo.queue.update_one(
+            {
+                "Trader": self.user["Name"],
+                "Account_ID": order["Account_ID"],
+                "Symbol": order["Symbol"],
+                "Strategy": order["Strategy"]
+            },
+            {"$set": order},
+            upsert=True
+        )
+        self.logger.debug(f"Order queued successfully: {order}")
 
     # STEP THREE
     @exception_handler
     async def updateStatus(self):
-        """ METHOD QUERIES THE QUEUED ORDERS AND USES THE ORDER ID TO QUERY TDAMERITRADES ORDERS FOR ACCOUNT TO CHECK THE ORDERS CURRENT STATUS.
-            INITIALLY WHEN ORDER IS PLACED, THE ORDER STATUS ON TDAMERITRADES END IS SET TO WORKING OR QUEUED. THREE OUTCOMES THAT I AM LOOKING FOR ARE
-            FILLED, CANCELED, REJECTED.
+        """Asynchronous method to update the status of queued orders.
 
-            IF FILLED, THEN QUEUED ORDER IS REMOVED FROM QUEUE AND THE pushOrder METHOD IS CALLED.
-
-            IF REJECTED OR CANCELED, THEN QUEUED ORDER IS REMOVED FROM QUEUE AND SENT TO OTHER COLLECTION IN MONGODB.
-
-            IF ORDER ID NOT FOUND, THEN ASSUME ORDER FILLED AND MARK AS ASSUMED DATA. ELSE MARK AS RELIABLE DATA.
+        Queries queued orders and checks their current status via the TDAmeritrade API.
+        Handles outcomes for filled, canceled, and rejected orders.
         """
-
-        queued_orders = self.queue.find({"Trader": self.user["Name"], "Order_ID": {
-                                        "$ne": None}, "Account_ID": self.account_id})
+        # Fetch queued orders asynchronously
+        queued_orders = await self.async_mongo.queue.find(
+            {"Trader": self.user["Name"], "Order_ID": {"$ne": None}, "Account_ID": self.account_id}
+        ).to_list(None)
 
         for queue_order in queued_orders:
 
@@ -194,80 +215,67 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             else:
                 orderMessage = spec_order.get('message', '')
 
-            # ORDER ID NOT FOUND. ASSUME REMOVED OR PAPER TRADING
-            if "error" in orderMessage or "Order not found" in orderMessage:
-
+            # Handle cases where the order is not found or contains an error
+            if "error" in orderMessage.lower() or "Order not found" in orderMessage:
                 custom = {
                     "price": queue_order["Entry_Price"] if queue_order["Direction"] == "OPEN POSITION" else queue_order["Exit_Price"],
                     "shares": queue_order["Qty"]
                 }
 
-                # IF RUNNING LIVE TRADER, THEN ASSUME DATA
                 if self.RUN_LIVE_TRADER:
-
                     data_integrity = "Assumed"
-
                     self.logger.warning(
-                        f"Order ID Not Found. Moving {queue_order['Symbol']} {queue_order['Order_Type']} Order To {queue_order['Direction']} Positions ({modifiedAccountID(self.account_id)})")
-
+                        f"Order ID not found. Moving {queue_order['Symbol']} {queue_order['Order_Type']} order to {queue_order['Direction']} positions ({modifiedAccountID(self.account_id)})"
+                    )
                 else:
-
                     data_integrity = "Reliable"
-
                     self.logger.info(
-                        f"Paper Trader - Sending Queue Order To PushOrder ({modifiedAccountID(self.account_id)})")
+                        f"Paper Trader - Sending queue order to PushOrder ({modifiedAccountID(self.account_id)})"
+                    )
 
-                self.pushOrder(queue_order, custom, data_integrity)
-
+                await self.pushOrder(queue_order, custom, data_integrity)
                 continue
 
-            new_status = spec_order["status"]
+            # Extract the new status
+            new_status = spec_order.get("status")
 
-            order_type = queue_order["Order_Type"]
+            if new_status == "FILLED":
+                if queue_order["Order_Type"] == "OCO":
+                    queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
 
-            # CHECK IF QUEUE ORDER ID EQUALS TDA ORDER ID
-            if queue_order["Order_ID"] == spec_order["Order_ID"]:
+                await self.pushOrder(queue_order, spec_order)
 
-                if new_status == "FILLED":
+            elif new_status in {"CANCELED", "REJECTED"}:
+                await self.async_mongo.queue.delete_one(
+                    {"Trader": self.user["Name"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"], "Account_ID": self.account_id}
+                )
 
-                    # CHECK IF OCO ORDER AND THEN GET THE CHILDREN
-                    if queue_order["Order_Type"] == "OCO":
+                other = {
+                    "Symbol": queue_order["Symbol"],
+                    "Order_Type": queue_order["Order_Type"],
+                    "Order_Status": new_status,
+                    "Strategy": queue_order["Strategy"],
+                    "Trader": self.user["Name"],
+                    "Date": getUTCDatetime(),
+                    "Account_ID": self.account_id
+                }
 
-                        queue_order = {**queue_order, **
-                                       self.extractOCOchildren(spec_order)}
+                collection = self.async_mongo.rejected if new_status == "REJECTED" else self.async_mongo.canceled
+                await collection.insert_one(other)
 
-                    self.pushOrder(queue_order, spec_order)
+                self.logger.info(
+                    f"{new_status.upper()} order for {queue_order['Symbol']} ({modifiedAccountID(self.account_id)})"
+                )
 
-                elif new_status == "CANCELED" or new_status == "REJECTED":
-
-                    # REMOVE FROM QUEUE
-                    self.queue.delete_one({"Trader": self.user["Name"], "Symbol": queue_order["Symbol"],
-                                           "Strategy": queue_order["Strategy"], "Account_ID": self.account_id})
-
-                    other = {
-                        "Symbol": queue_order["Symbol"],
-                        "Order_Type": order_type,
-                        "Order_Status": new_status,
-                        "Strategy": queue_order["Strategy"],
-                        "Trader": self.user["Name"],
-                        "Date": getUTCDatetime(),
-                        "Account_ID": self.account_id
-                    }
-
-                    self.rejected.insert_one(
-                        other) if new_status == "REJECTED" else self.canceled.insert_one(other)
-
-                    self.logger.info(
-                        f"{new_status.upper()} Order For {queue_order['Symbol']} ({modifiedAccountID(self.account_id)})")
-
-                else:
-
-                    self.queue.update_one({"Trader": self.user["Name"], "Account_ID": queue_order["Account_ID"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"]},
-                                          {"$set": {"Order_Status": new_status}})
+            else:
+                await self.async_mongo.queue.update_one(
+                    {"Trader": self.user["Name"], "Account_ID": queue_order["Account_ID"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"]},
+                    {"$set": {"Order_Status": new_status}}
+                )
 
     # STEP FOUR
     @exception_handler
-    def pushOrder(self, queue_order, spec_order, data_integrity="Reliable"):
+    async def pushOrder(self, queue_order, spec_order, data_integrity="Reliable"):
         """ METHOD PUSHES ORDER TO EITHER OPEN POSITIONS OR CLOSED POSITIONS COLLECTION IN MONGODB.
             IF BUY ORDER, THEN PUSHES TO OPEN POSITIONS.
             IF SELL ORDER, THEN PUSHES TO CLOSED POSITIONS.
@@ -329,12 +337,21 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 "Entry_Price": price,
                 "Entry_Date": entry_date  # Use the more accurate entry date
             })
-            collection_insert = self.open_positions.insert_one
+            collection_insert = self.async_mongo.open_positions.insert_one
             message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Trader: {self.user['Name']}"
 
         elif direction == "CLOSE POSITION":
-            position = self.open_positions.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id})
+            try:
+                position = await self.async_mongo.open_positions.find_one(
+                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+                )
+                self.logger.debug(f"Query result for {symbol}: {position}")
+            except asyncio.CancelledError:
+                self.logger.warning(f"Task for {symbol} in pushOrder was cancelled.")
+                raise  # Reraise the cancellation to propagate it
+            except Exception as e:
+                self.logger.error(f"Query failed for {symbol}: {e}")
+                position = None
 
             if position is not None:
                 obj.update({
@@ -346,7 +363,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 })
 
                 # Check if the position is already in closed_positions
-                already_closed = self.closed_positions.count_documents({
+                already_closed = await self.async_mongo.closed_positions.count_documents({
                     "Trader": self.user["Name"],
                     "Account_ID": account_id,
                     "Symbol": symbol,
@@ -358,11 +375,12 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 })
 
                 if already_closed == 0:
-                    collection_insert = self.closed_positions.insert_one
+                    collection_insert = self.async_mongo.closed_positions.insert_one
                     message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
 
-                is_removed = self.open_positions.delete_one(
-                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy})
+                is_removed = await self.async_mongo.open_positions.delete_one(
+                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
+                )
 
                 if is_removed.deleted_count == 0:
                     self.logger.error(f"Failed to delete open position for {symbol}")
@@ -370,137 +388,82 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         # Push to MongoDB with retry logic
         if collection_insert:
             try:
-                collection_insert(obj)
-            except (WriteConcernError, WriteError) as e:
+                await collection_insert(obj)
+            except Exception as e:
                 self.logger.error(f"Failed to insert {symbol} into MongoDB. Retrying... - {e}")
                 try:
-                    collection_insert(obj)
+                    await collection_insert(obj)
                 except Exception as e:
                     self.logger.error(f"Retry failed for {symbol}. Error: {e}")
-            except Exception as e:
-                self.logger.error(f"Unexpected error inserting {symbol}: {e}")
 
         # Remove from Queue
-        self.queue.delete_one(
-            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id})
+        await self.async_mongo.queue.delete_one(
+            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+        )
 
-        self.push.send(message_to_push)
-
+        # Send notification
+        # if message_to_push:
+        #     await self.push.send(message_to_push)
 
     # RUN TRADER
     @exception_handler
     async def runTrader(self, trade_data):
-        """ METHOD RUNS ON A FOR LOOP ITERATING OVER THE TRADE DATA AND MAKING DECISIONS ON WHAT NEEDS TO BUY OR SELL.
+        self.logger.debug(f"runTrader started with trade_data ({modifiedAccountID(self.account_id)}): {trade_data}")
 
-        Args:
-            trade_data ([list]): CONSISTS OF TWO DICTS TOP LEVEL, AND THEIR VALUES AS LISTS CONTAINING ALL THE TRADE DATA FOR EACH STOCK.
-        """
-
-        self.logger.debug("runTrader started with trade_data: %s", trade_data)
-
-        # UPDATE ALL ORDER STATUS'S
+        # Update all order statuses
         await self.updateStatus()
 
-        # UPDATE USER ATTRIBUTE
-        self.user = self.mongo.users.find_one({"Name": self.user["Name"]})
+        # Update user attribute
+        self.user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
 
-        # FORBIDDEN SYMBOLS
-        forbidden_symbols_cursor = self.mongo.forbidden.find({"Account_ID": self.account_id})
-        forbidden_symbols = {doc['Symbol'] for doc in forbidden_symbols_cursor}
+        # Pre-fetch data to minimize repetitive queries
+        user_name = self.user["Name"]
+        account_id = self.account_id
+
+        open_positions = await self.async_mongo.open_positions.find({"Trader": user_name, "Account_ID": account_id}).to_list(None)
+        open_positions_dict = {(p["Symbol"], p["Strategy"]): p for p in open_positions}
+
+        queued_orders = await self.async_mongo.queue.find({"Trader": user_name, "Account_ID": account_id}).to_list(None)
+        queued_orders_dict = {(q["Symbol"], q["Strategy"]): q for q in queued_orders}
+
+        strategies = await self.async_mongo.strategies.find({"Account_ID": account_id}).to_list(None)
+        strategies_dict = {s["Strategy"]: s for s in strategies}
+
+        forbidden_symbols = {
+            doc['Symbol'] for doc in await self.async_mongo.forbidden.find({"Account_ID": account_id}).to_list(None)
+        }
 
         for row in trade_data:
 
             strategy = row["Strategy"]
-
             symbol = row["Symbol"]
-
-            asset_type = row["Asset_Type"]
-
             side = row["Side"]
 
-            # CHECK OPEN POSITIONS AND QUEUE
-            open_position = self.open_positions.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": self.account_id})
-
-            queued = self.queue.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": self.account_id})
-
-            strategy_object = self.strategies.find_one(
-                {"Strategy": strategy, "Account_ID": self.account_id})
+            open_position = open_positions_dict.get((symbol, strategy))
+            queued = queued_orders_dict.get((symbol, strategy))
+            strategy_object = strategies_dict.get(strategy)
 
             if not strategy_object:
-
-                self.addNewStrategy(strategy, asset_type)
-
-                strategy_object = self.strategies.find_one(
-                    {"Account_ID": self.account_id, "Strategy": strategy})
+                strategy_object = await self.addNewStrategy(strategy, row["Asset_Type"])
 
             position_type = strategy_object["Position_Type"]
-
             row["Position_Type"] = position_type
 
-            if not queued:
+            if queued:
+                continue
 
-                direction = None
-
-                # IS THERE AN OPEN POSITION ALREADY IN MONGO FOR THIS SYMBOL/STRATEGY COMBO
-                if open_position:
-
+            # Determine trade direction
+            direction = None
+            if open_position:
+                # Closing existing positions
+                if (side == "BUY" and position_type == "SHORT") or (side == "SELL" and position_type == "LONG"):
                     direction = "CLOSE POSITION"
-
-                    # NEED TO COVER SHORT
-                    if side == "BUY" and position_type == "SHORT":
-
-                        pass
-
-                    # NEED TO SELL LONG
-                    elif side == "SELL" and position_type == "LONG":
-
-                        pass
-
-                    # NEED TO SELL LONG OPTION
-                    elif side == "SELL_TO_CLOSE" and position_type == "LONG":
-
-                        pass
-
-                    # NEED TO COVER SHORT OPTION
-                    elif side == "BUY_TO_CLOSE" and position_type == "SHORT":
-
-                        pass
-
-                    else:
-
-                        continue
-
-                elif not open_position and symbol not in forbidden_symbols:
-
+            elif symbol not in forbidden_symbols:
+                # Opening new positions
+                if (side == "BUY" and position_type == "LONG") or (side == "SELL" and position_type == "SHORT"):
                     direction = "OPEN POSITION"
 
-                    # NEED TO GO LONG
-                    if side == "BUY" and position_type == "LONG":
-
-                        pass
-
-                    # NEED TO GO SHORT
-                    elif side == "SELL" and position_type == "SHORT":
-
-                        pass
-
-                    # NEED TO GO SHORT OPTION
-                    elif side == "SELL_TO_OPEN" and position_type == "SHORT":
-
-                        pass
-
-                    # NEED TO GO LONG OPTION
-                    elif side == "BUY_TO_OPEN" and position_type == "LONG":
-
-                        pass
-
-                    else:
-
-                        continue
-
-                if direction != None:
-
-                    await self.sendOrder(row if not open_position else {
-                                   **row, **open_position}, strategy_object, direction)
+            # Process order
+            if direction:
+                order_data = {**row, **open_position} if open_position else row
+                await self.sendOrder(order_data, strategy_object, direction)

@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import logging
+import random
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pathlib import Path
@@ -78,16 +80,36 @@ def modifiedAccountID(account_id):
 
     return '*' * (len(str(account_id)) - 4) + str(account_id)[-4:]
 
-def assign_order_ids(order_strategy):
-    import random
+def assign_order_ids(order_strategy, seen=None):
+    """
+    Recursively assign unique negative order IDs to a strategy and its children.
 
-    """Recursively assign order IDs to child orders, updating 'Order_ID'."""
-    if isinstance(order_strategy, dict):
-        # Add or update 'Order_ID' if it's not present or is None
-        if "Order_ID" not in order_strategy or order_strategy["Order_ID"] is None:
-            order_strategy["Order_ID"] = -random.randint(100_000_000, 999_999_999)
+    Args:
+        order_strategy (dict): The order strategy to process.
+        seen (set): Tracks processed strategies to prevent infinite recursion (optional).
+    """
+    if seen is None:
+        seen = set()
+
+    if not isinstance(order_strategy, dict):
+        raise ValueError("order_strategy must be a dictionary.")
+
+    # Generate a unique negative ID if none exists
+    if "Order_ID" not in order_strategy or order_strategy["Order_ID"] is None:
+        order_strategy["Order_ID"] = -random.randint(100_000_000, 999_999_999)
+
+    # Ensure circular references don't cause infinite recursion
+    strategy_id = id(order_strategy)
+    if strategy_id in seen:
+        logging.warning("Detected circular reference in order_strategy. Skipping...")
+        return
+    seen.add(strategy_id)
+
+    # Recursively process childOrderStrategies if they exist
+    if "childOrderStrategies" in order_strategy:
+        if not isinstance(order_strategy["childOrderStrategies"], list):
+            raise ValueError("'childOrderStrategies' must be a list.")
         
-        # Recursively assign order IDs to any childOrderStrategies
-        if "childOrderStrategies" in order_strategy:
-            for child in order_strategy["childOrderStrategies"]:
-                assign_order_ids(child)
+        for child in order_strategy["childOrderStrategies"]:
+            assign_order_ids(child, seen)
+
