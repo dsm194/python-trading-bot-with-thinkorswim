@@ -2,7 +2,6 @@
 import asyncio
 from datetime import datetime, timedelta
 import time
-import traceback
 import httpx
 import websockets
 from assets.helper_functions import getUTCDatetime, modifiedAccountID
@@ -57,7 +56,10 @@ class TDAmeritrade:
 
         self.registered_handlers = {"equity": set(), "option": set()}
 
-        # self.loop = asyncio.get_running_loop()
+        self._streaming_lock = asyncio.Lock()
+
+        self.is_streaming_connected = False  # Default to not connected
+
 
     @exception_handler
     async def initialConnect(self):
@@ -453,11 +455,11 @@ class TDAmeritrade:
                 )
                 self.logger.debug(f"Successfully subscribed to option symbols: {option_symbols}")
 
-
     async def _safe_connect_to_streaming(self, retries=3, delay=5):
         for attempt in range(retries):
             try:
                 await self.connect_to_streaming()
+                self.is_streaming_connected = True
                 return
             except Exception as e:
                 self.logger.error(f"Reconnect attempt {attempt + 1} failed: {e} ({modifiedAccountID(self.account_id)})")
@@ -466,13 +468,26 @@ class TDAmeritrade:
                 else:
                     raise RuntimeError(f"Failed to reconnect after retries. ({modifiedAccountID(self.account_id)})")
 
-
     async def _safe_disconnect_streaming(self):
-        try:
-            # async with self.client_lock:
-            await self.disconnect_streaming()  # Lock only during connection attempts
-        except Exception as e:
-            self.logger.error(f"Failed to disconnect to streaming: {e} ({modifiedAccountID(self.account_id)})")
+        if not self.is_streaming_connected:
+            self.logger.info("Streaming already disconnected. Skipping disconnect call.")
+            return
+
+        async with self._streaming_lock:
+            if not self.is_streaming_connected:  # Recheck after acquiring the lock
+                self.logger.info("Streaming already disconnected. Skipping disconnect call.")
+                return
+
+            try:
+                self.logger.debug("Disconnecting streaming...")
+                await self.disconnect_streaming()
+                self.is_streaming_connected = False  # Update the flag after disconnection
+                self.logger.debug("Streaming disconnected successfully.")
+            except asyncio.CancelledError:
+                self.logger.warning(f"Task was cancelled during disconnect_streaming ({modifiedAccountID(self.account_id)})")
+                raise  # Re-raise to propagate cancellation
+            except Exception as e:
+                self.logger.error(f"Failed to disconnect to streaming: {e} ({modifiedAccountID(self.account_id)})")
 
     async def connect_to_streaming(self):
         try:
@@ -499,6 +514,9 @@ class TDAmeritrade:
                 if hasattr(self.stream_client, "_socket") and self.stream_client._socket:
                     self.logger.debug("Forcing WebSocket close.")
                     await self.stream_client._socket.close()
+        except asyncio.CancelledError:
+            self.logger.warning(f"Task cancellation acknowledged during logout. ({modifiedAccountID(self.account_id)})")
+            raise  # Re-raise the cancellation
         except Exception as e:
             self.logger.warning(f"Suppressed exception during logout: {e}")
         finally:

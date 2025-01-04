@@ -9,7 +9,6 @@ from api_trader.quote_manager_pool import QuoteManagerPool
 from async_mongo import AsyncMongoDB
 from tdameritrade import TDAmeritrade
 from gmail import Gmail
-from mongo import MongoDB
 
 from assets.pushsafer import PushNotification
 from assets.exception_handler import exception_handler
@@ -63,10 +62,8 @@ class Main:
         self.logger.addHandler(ch)
 
         # CONNECT TO MONGO
-        self.mongo = MongoDB(self.logger)
         self.async_mongo = AsyncMongoDB(self.logger)
         
-        mongo_connected = self.mongo.connect()
         mongo_connected = await self.async_mongo.connect()
 
         # CONNECT TO GMAIL API
@@ -176,11 +173,22 @@ class Main:
             for task in remaining_tasks:
                 task.cancel()
 
+            # Wait for tasks to finish, explicitly ignoring CancelledError
             await asyncio.gather(*remaining_tasks, return_exceptions=True)
+
+        except asyncio.CancelledError:
+            self.logger.info("Task cancellation acknowledged during shutdown.")
         except Exception as e:
             self.logger.error(f"Error while cancelling tasks: {e}")
         finally:
-            # Ensure the stop signal file is removed and cleanup is logged
+            # Close MongoDB connection
+            try:
+                await self.async_mongo.close()
+                self.logger.info("Closed AsyncMongoDB connection.")
+            except Exception as close_error:
+                self.logger.error(f"Error while closing AsyncMongoDB: {close_error}")
+
+            # Remove the stop signal file
             try:
                 if os.path.isfile(self.stop_signal_file):
                     os.remove(self.stop_signal_file)

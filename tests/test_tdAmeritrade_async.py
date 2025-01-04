@@ -73,12 +73,14 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
     @patch.object(TDAmeritrade, 'disconnect_streaming', new_callable=AsyncMock)
     async def test_safe_disconnect_streaming_success(self, mock_disconnect_streaming):
+        self.td.is_streaming_connected = True  # Simulate connected state
         # Ensure disconnect_streaming runs without exception
         await self.td._safe_disconnect_streaming()
         mock_disconnect_streaming.assert_called_once()
 
     @patch.object(TDAmeritrade, 'disconnect_streaming', side_effect=Exception("Disconnection error"))
     async def test_safe_disconnect_streaming_failure(self, mock_disconnect_streaming):
+        self.td.is_streaming_connected = True  # Simulate connected state
         # Verify exception handling and logging in case of disconnection error
         await self.td._safe_disconnect_streaming()
         mock_disconnect_streaming.assert_called_once()

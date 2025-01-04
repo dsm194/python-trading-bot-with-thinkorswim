@@ -26,6 +26,9 @@ class QuoteManager:
         # Start the debounce cache processor in the background
         self.debounce_task = asyncio.create_task(self._process_debounce_cache())
 
+        self.stop_lock = asyncio.Lock()
+        self.is_streaming = False
+
         assert asyncio.get_event_loop() == self.loop, "QuoteManager is not created with the expected event loop"
 
     @staticmethod
@@ -207,28 +210,29 @@ class QuoteManager:
 
     async def stop_streaming(self):
         """Stops streaming and performs cleanup."""
-        if not self.is_streaming:
-            return  # Stream is already stopped
+        async with self.stop_lock:  # Ensure only one task enters this block
+            if not self.is_streaming:
+                return  # Stream is already stopped
 
-        self.is_streaming = False
-        self.stop_event.set()  # Signal all waiting tasks to stop
-        self.new_data_event.set()  # Ensure any waiting tasks are woken up
+            self.is_streaming = False
+            self.stop_event.set()  # Signal all waiting tasks to stop
+            self.new_data_event.set()  # Ensure any waiting tasks are woken up
 
-        # Wait for debounce task to finish and clean up resources
-        if self.debounce_task:
-            await self.debounce_task  # Wait for the debounce task to finish
+            # Wait for debounce task to finish and clean up resources
+            if self.debounce_task:
+                await self.debounce_task  # Wait for the debounce task to finish
 
-        # Attempt to disconnect the streaming service
-        try:
-            self.logger.debug("Disconnecting streaming...")
-            if hasattr(self, 'tdameritrade') and self.tdameritrade:
-                await asyncio.wait_for(self.tdameritrade.disconnect_streaming(), timeout=2)
-                self.logger.debug("Streaming disconnected successfully.")
-        except asyncio.TimeoutError:
-            self.logger.warning("Streaming logout timed out.")
-        except Exception as e:
-            self.logger.error(f"Error during streaming disconnect: {e}")
+            # Attempt to disconnect the streaming service
+            try:
+                self.logger.debug("Disconnecting streaming...")
+                if hasattr(self, 'tdameritrade') and self.tdameritrade:
+                    await asyncio.wait_for(self.tdameritrade.disconnect_streaming(), timeout=2)
+                    self.logger.debug("Streaming disconnected successfully.")
+            except asyncio.TimeoutError:
+                self.logger.warning("Streaming logout timed out.")
+            except Exception as e:
+                self.logger.error(f"Error during streaming disconnect: {e}")
 
-        # Properly shut down the executor
-        self.executor.shutdown(wait=True)
-        self.logger.info("Streaming stopped and resources cleaned up.")
+            # Properly shut down the executor
+            self.executor.shutdown(wait=True)
+            self.logger.info("Streaming stopped and resources cleaned up.")

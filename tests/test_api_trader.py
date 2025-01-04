@@ -890,54 +890,45 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock the constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_run_trader(self, mock_sendOrder, mock_init):
-
         # Mock relevant methods/attributes used in run_trader
-        self.api_trader.queue = MagicMock()
-        self.api_trader.user = MagicMock()
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.user = {"Name": "TestUser"}  # Ensure self.user["Name"] is accessible
         self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
+        self.api_trader.account_id = "test_account"
         self.api_trader.updateStatus = AsyncMock()
 
-        # Mock the find_one method on open_positions and queue to None value, so that runTrader will BUY
-        # Mock open_positions with to_list
-        mock_open_positions_cursor = AsyncMock()
-        mock_open_positions_cursor.to_list = AsyncMock(return_value=[])  # Return an empty list for open positions
-        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        # Mock open_positions.find_one to return None (no open positions)
+        self.api_trader.async_mongo.open_positions.find_one = AsyncMock(return_value=None)
 
-        mock_queue_cursor = AsyncMock()
-        mock_queue_cursor.to_list = AsyncMock(return_value=[])  # Return an empty list for queue
-        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queue_cursor)
+        # Mock queue.find_one to return None (no queued orders)
+        self.api_trader.async_mongo.queue.find_one = AsyncMock(return_value=None)
 
+        # Mock strategies.find_one to return a strategy object
+        self.api_trader.async_mongo.strategies.find_one = AsyncMock(
+            return_value={"Strategy": "test_strategy", "Account_ID": "test_account", "Position_Type": "LONG", "Order_Type": "STANDARD"}
+        )
+
+        # Mock forbidden symbols to be empty
         mock_forbidden_cursor = AsyncMock()
-        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # Return an empty list for queue
+        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
         self.api_trader.async_mongo.forbidden.find = MagicMock(return_value=mock_forbidden_cursor)
 
-        mock_strategies_cursor = AsyncMock()
-        mock_strategies_cursor.to_list = AsyncMock(
-            return_value=[{"Strategy": "test_strategy", "Account_ID": "test_account", "Position_Type": "LONG", "Order_Type": "STANDARD"}]
-        )
-        self.api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
-
-        self.api_trader.mongo.find.return_value = [{"Trader": "test_trader", "Account_ID": "test_account", "Order_ID": "12345"}]
-
-        trade_data = [{"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY", 'Asset_Type': 'EQUITY'}]
+        # Create trade data to simulate an open position condition
+        trade_data = [{"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY", "Asset_Type": "EQUITY"}]
 
         # Call run_trader method
         await self.api_trader.runTrader(trade_data=trade_data)
 
         # Add assertions here
-        # TODO: revisit this assert - canching open positions prior to trade_data loop may cause a bug
-        self.api_trader.async_mongo.open_positions.find.assert_called_once()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.queue.find.assert_called_once()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.strategies.find.assert_called_once()  # Ensure mongo query is performed
-        self.api_trader.updateStatus.assert_called()  # Ensure status is updated
-        mock_sendOrder.assert_called_once()
+        self.api_trader.updateStatus.assert_called_once()  # Ensure status is updated
+        mock_sendOrder.assert_called_once_with(
+            {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY", "Asset_Type": "EQUITY", "Position_Type": "LONG"},
+            {"Strategy": "test_strategy", "Account_ID": "test_account", "Position_Type": "LONG", "Order_Type": "STANDARD"},
+            "OPEN POSITION"
+        )
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
-
         # Mock relevant methods/attributes used in run_trader
         self.api_trader.queue = MagicMock()
         self.api_trader.user = MagicMock()
@@ -945,54 +936,31 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
         self.api_trader.updateStatus = AsyncMock()
-        
-        # Mock dependencies
-        self.api_trader.mongo = MagicMock()
-        self.api_trader.tdameritrade = MagicMock()
-        self.api_trader.logger = MagicMock()
 
         # Generate dynamic test data for round-trip orders
         open_positions, strategies, quotes = generate_test_data_for_run_trader(num_positions=10)
 
         # Mock the mongo collections to return generated data
-        mock_open_positions_cursor = AsyncMock()
-        mock_open_positions_cursor.to_list = AsyncMock(return_value=open_positions)  # Return an empty list for open positions
-        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        self.api_trader.async_mongo.open_positions.find_one = AsyncMock(return_value=None)
+        self.api_trader.async_mongo.queue.find_one = AsyncMock(return_value=None)
+        self.api_trader.async_mongo.strategies.find_one = AsyncMock(return_value=strategies[0])
 
-        mock_strategies_cursor = AsyncMock()
-        mock_strategies_cursor.to_list = AsyncMock(return_value=strategies)  # Return an empty list for open positions
-        self.api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
+        # Mock forbidden symbols to be empty
+        mock_forbidden_cursor = AsyncMock()
+        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
+        self.api_trader.async_mongo.forbidden.find = MagicMock(return_value=mock_forbidden_cursor)
 
         # Mock the getQuotes method to return simulated quotes data
         self.api_trader.tdameritrade.getQuotesUnified.return_value = quotes
-
-        # Mock queue.find.to_list to simulate unqueued orders
-        mock_queue_cursor = AsyncMock()
-        mock_queue_cursor.to_list = AsyncMock(return_value=[])  # Return an empty list for queue
-        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queue_cursor)
-
-        mock_forbidden_cursor = AsyncMock()
-        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # Return an empty list for queue
-        self.api_trader.async_mongo.forbidden.find = MagicMock(return_value=mock_forbidden_cursor)
-
-        # Mock strategies.find_one to return the correct strategy object
-        def mock_find_strategy(query):
-            strategy_name = query.get("Strategy")
-            for strategy in strategies:
-                if strategy["Strategy"] == strategy_name:
-                    return strategy
-            return None
-
-        self.api_trader.async_mongo.strategies.find_one.side_effect = mock_find_strategy
 
         # Call runTrader with the mock data
         trade_data = [{"Symbol": position["Symbol"], "Strategy": position["Strategy"], "Side": position["Side"], 'Asset_Type': position["Asset_Type"]} for position in open_positions]
         await self.api_trader.runTrader(trade_data=trade_data)
 
         # Add assertions here
-        self.api_trader.async_mongo.open_positions.find.assert_called()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.queue.find.assert_called()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.strategies.find.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.open_positions.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.queue.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.strategies.find_one.assert_called()  # Ensure mongo query is performed
         self.api_trader.updateStatus.assert_called()  # Ensure status is updated
         mock_sendOrder.assert_called()
 

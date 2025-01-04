@@ -144,6 +144,7 @@ class Tasks:
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred in add_quotes: {e}")
 
+    @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
             # Callback function invoked when quotes are updated
             # print(f"Evaluating paper triggers for {symbol}: {quote_data}")

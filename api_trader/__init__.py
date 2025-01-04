@@ -406,54 +406,68 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         # Update user attribute
         self.user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
 
-        # Pre-fetch data to minimize repetitive queries
         user_name = self.user["Name"]
         account_id = self.account_id
-
-        open_positions = await self.async_mongo.open_positions.find({"Trader": user_name, "Account_ID": account_id}).to_list(None)
-        open_positions_dict = {(p["Symbol"], p["Strategy"]): p for p in open_positions}
-
-        queued_orders = await self.async_mongo.queue.find({"Trader": user_name, "Account_ID": account_id}).to_list(None)
-        queued_orders_dict = {(q["Symbol"], q["Strategy"]): q for q in queued_orders}
-
-        strategies = await self.async_mongo.strategies.find({"Account_ID": account_id}).to_list(None)
-        strategies_dict = {s["Strategy"]: s for s in strategies}
 
         forbidden_symbols = {
             doc['Symbol'] for doc in await self.async_mongo.forbidden.find({"Account_ID": account_id}).to_list(None)
         }
 
         for row in trade_data:
-
             strategy = row["Strategy"]
             symbol = row["Symbol"]
             side = row["Side"]
 
-            open_position = open_positions_dict.get((symbol, strategy))
-            queued = queued_orders_dict.get((symbol, strategy))
-            strategy_object = strategies_dict.get(strategy)
+            # Fetch open position, queued order, and strategy for the current row
+            open_position = await self.async_mongo.open_positions.find_one(
+                {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+            )
+            queued_order = await self.async_mongo.queue.find_one(
+                {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+            )
+            strategy_object = await self.async_mongo.strategies.find_one(
+                {"Strategy": strategy, "Account_ID": account_id}
+            )
 
+            # Add new strategy if it doesn't exist
             if not strategy_object:
                 strategy_object = await self.addNewStrategy(strategy, row["Asset_Type"])
 
             position_type = strategy_object["Position_Type"]
             row["Position_Type"] = position_type
 
-            if queued:
+            # Skip processing if the order is already queued
+            if queued_order:
                 continue
 
             # Determine trade direction
             direction = None
             if open_position:
                 # Closing existing positions
-                if (side == "BUY" and position_type == "SHORT") or (side == "SELL" and position_type == "LONG"):
-                    direction = "CLOSE POSITION"
+                if side == "BUY" and position_type == "SHORT":
+                    direction = "CLOSE POSITION"  # Covering a short
+                elif side == "SELL" and position_type == "LONG":
+                    direction = "CLOSE POSITION"  # Selling a long
+                elif side == "SELL_TO_CLOSE" and position_type == "LONG":
+                    direction = "CLOSE POSITION"  # Selling long option
+                elif side == "BUY_TO_CLOSE" and position_type == "SHORT":
+                    direction = "CLOSE POSITION"  # Covering short option
+                else:
+                    continue  # Skip if none of the above conditions match
             elif symbol not in forbidden_symbols:
                 # Opening new positions
-                if (side == "BUY" and position_type == "LONG") or (side == "SELL" and position_type == "SHORT"):
-                    direction = "OPEN POSITION"
+                if side == "BUY" and position_type == "LONG":
+                    direction = "OPEN POSITION"  # Going long
+                elif side == "SELL" and position_type == "SHORT":
+                    direction = "OPEN POSITION"  # Shorting
+                elif side == "SELL_TO_OPEN" and position_type == "SHORT":
+                    direction = "OPEN POSITION"  # Opening short option
+                elif side == "BUY_TO_OPEN" and position_type == "LONG":
+                    direction = "OPEN POSITION"  # Opening long option
+                else:
+                    continue  # Skip if none of the above conditions match
 
-            # Process order
+            # Process the order if a direction is determined
             if direction:
                 order_data = {**row, **open_position} if open_position else row
                 await self.sendOrder(order_data, strategy_object, direction)
