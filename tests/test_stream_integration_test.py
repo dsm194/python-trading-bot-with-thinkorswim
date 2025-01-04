@@ -1,6 +1,4 @@
-from asyncio import Event
 import asyncio
-import threading
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,15 +9,14 @@ from schwab.streaming import StreamClient
 class TestStreamIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_stream_full_workflow(self):
         # Mock necessary dependencies
-        self.mongo_mock = MagicMock()
+        self.mongo_mock = AsyncMock()
         self.user_mock = MagicMock()
         self.logger_mock = MagicMock()
         self.push_notification_mock = MagicMock()
-        self.stop_event = threading.Event()
 
         # Mock TDAmeritrade object as required
         obj = TDAmeritrade(
-            mongo=self.mongo_mock,
+            async_mongo=self.mongo_mock,
             user=self.user_mock,
             account_id='test_account',
             logger=self.logger_mock,
@@ -59,7 +56,7 @@ class TestStreamIntegration(unittest.IsolatedAsyncioTestCase):
         # Validate interactions
         mock_stream_client.login.assert_called_once()
         mock_stream_client.level_one_equity_add.assert_called_once_with(
-            symbols=["AAPL", "TSLA"],
+            ["AAPL", "TSLA"],
             fields=[
                 StreamClient.LevelOneEquityFields.SYMBOL,
                 StreamClient.LevelOneEquityFields.BID_PRICE,

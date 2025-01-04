@@ -31,47 +31,49 @@ class AssetType:
 
 class OrderBuilderWrapper:
 
-    def __init__(self, mongo=None):
+    def __init__(self, async_mongo=None):
         self.strategy_cache = {}
         """
         Initialize with an optional mongo for fetching open_positions.
         """
-        self.mongo = mongo
+        self.async_mongo = async_mongo
 
         super().__init__()
 
 
-    def get_open_positions(self, user, account_id, strategy):
+    async def get_open_positions(self, user, account_id, strategy):
         """
         Fetch open positions from the database for the given user, account ID, and strategy.
         """
-        if self.mongo:
-            return list(self.mongo.open_positions.find({
-                "Trader": user["Name"],
+        if self.async_mongo:
+            open_positions = await self.async_mongo.open_positions.find({
+                 "Trader": user["Name"],
                 "Account_ID": account_id,
                 "Strategy": strategy
-            }))
+            }).to_list(None)  # Convert cursor to a list
+            return open_positions
         else:
             raise ValueError("MongoDB reference is not provided.")
     
 
-    def get_queued_positions(self, user, account_id, strategy):
+    async def get_queued_positions(self, user, account_id, strategy):
         """
         Fetch queued positions from the database for the given user, account ID, and strategy.
         """
-        if self.mongo:
-            return list(self.mongo.queue.find({
+        if self.async_mongo:
+            queued_positions = await self.async_mongo.queue.find({
                 "Trader": user["Name"],
                 "Account_ID": account_id,
                 "Strategy": strategy,
                 "Order_Status": { "$in": ["PENDING_ACTIVATION", "QUEUED"] },
                 "Direction": "OPEN POSITION"
-            }))
+            }).to_list(None)
+            return queued_positions
         else:
             raise ValueError("MongoDB reference is not provided.")
         
 
-    def get_current_strategy_allocation(self, strategy, user, account_id):
+    async def get_current_strategy_allocation(self, strategy, user, account_id):
         """
         Fetch the current allocation for a given strategy. If open_positions are not provided,
         use the internal mongo reference to fetch them.
@@ -84,8 +86,8 @@ class OrderBuilderWrapper:
         Returns:
             float: The current allocation for the strategy.
         """
-        open_positions = self.get_open_positions(user, account_id, strategy)
-        outstanding_orders = self.get_queued_positions(user, account_id, strategy)
+        open_positions = await self.get_open_positions(user, account_id, strategy)
+        outstanding_orders = await self.get_queued_positions(user, account_id, strategy)
 
         def calculate_allocation(positions):
             """Helper function to calculate allocation with an option multiplier."""
@@ -230,7 +232,7 @@ class OrderBuilderWrapper:
 
             max_position_size = strategy_object.get("MaxPositionSize", None)
             if max_position_size:
-                current_allocated = self.get_current_strategy_allocation(strategy, user=user, account_id=account_id)
+                current_allocated = await self.get_current_strategy_allocation(strategy, user=user, account_id=account_id)
                 new_allocation = shares * price
                 
                 if current_allocated + new_allocation > float(max_position_size):

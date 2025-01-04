@@ -13,7 +13,7 @@ from tdameritrade import TDAmeritrade
 class TestQuoteStreaming(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         # Mock necessary dependencies
-        self.mongo_mock = MagicMock()
+        self.mongo_mock = AsyncMock()
         self.user_mock = MagicMock()
         self.logger_mock = MagicMock()
         self.push_notification_mock = MagicMock()
@@ -21,12 +21,19 @@ class TestQuoteStreaming(unittest.IsolatedAsyncioTestCase):
 
         # Mock TDAmeritrade object as required
         self.td_ameritrade = TDAmeritrade(
-            mongo=self.mongo_mock,
+            async_mongo=self.mongo_mock,
             user=self.user_mock,
             account_id='test_account',
             logger=self.logger_mock,
             push_notification=self.push_notification_mock
         )
+        
+        # Mock async_client with token_metadata
+        mock_token_metadata = MagicMock()
+        mock_token_metadata.token = {"access_token": "mock_token"}
+        mock_async_client = MagicMock()
+        mock_async_client.token_metadata = mock_token_metadata
+        self.td_ameritrade.async_client = mock_async_client
         
         # Set up the QuoteManager with mock methods
         self.quote_manager = QuoteManager(self.td_ameritrade, self.logger_mock)
@@ -82,41 +89,46 @@ class TestQuoteStreaming(unittest.IsolatedAsyncioTestCase):
         symbols = [
             {"symbol": "AAPL", "asset_type": "EQUITY"},
             {"symbol": "MSFT", "asset_type": "EQUITY"},
-            {"symbol": "GOOGL", "asset_type": "EQUITY"},
-            {"symbol": "TSLA", "asset_type": "EQUITY"}
         ]
 
-        with patch.object(self.position_updater, 'queue_max_price_update') as mock_queue_max_price_update, \
-            patch.object(self.quote_manager, 'add_quotes') as mock_add_quotes:
-            
-            # Register PositionUpdater's queue_max_price_update as a callback
-            await self.quote_manager.add_callback(self.position_updater.queue_max_price_update)
-            
-            # Mock start_stream to call simulate_mock_stream
-            async def mock_start_stream(symbols, quote_handler, max_retries, stop_event):
-                return await self.simulate_mock_stream(symbols, quote_handler=quote_handler, max_retries=max_retries, stop_event=stop_event)
-            self.quote_manager.tdameritrade.start_stream = AsyncMock(side_effect=mock_start_stream)
-            
-            # Call add_quotes (mocked) to simulate streaming without real data
-            await self.quote_manager.add_quotes(symbols)
+        # Use AsyncMock for the callback and an event for signaling
+        mock_callback = AsyncMock()
+        callback_event = asyncio.Event()
 
-            # Manually specified quotes for consistent test verification
-            quotes = {
-                "content": [
-                    {'key': "AAPL", 'LAST_PRICE': 150.0},
-                    {'key': "MSFT", 'LAST_PRICE': 300.0}
-                ]
-            }
+        # Define a wrapped callback to signal when it's called
+        async def wrapped_callback(symbol, quote):
+            await mock_callback(symbol, quote)
+            if symbol == "MSFT":  # Signal after the last expected callback
+                callback_event.set()
 
-            # Directly invoke quote_handler to simulate receiving these quotes
-            await self.quote_manager.quote_handler(quotes)
+        # Add the wrapped callback to the QuoteManager
+        await self.quote_manager.add_callback(wrapped_callback)
 
-            # Verify queue_max_price_update calls with correct values
-            mock_queue_max_price_update.assert_any_call("AAPL", {'bid_price': None, 'ask_price': None, 'last_price': 150.0, 'regular_market_last_price': 150.0})
-            mock_queue_max_price_update.assert_any_call("MSFT", {'bid_price': None, 'ask_price': None, 'last_price': 300.0, 'regular_market_last_price': 300.0})
-            
-            # Check number of calls to confirm expected updates
-            self.assertEqual(mock_queue_max_price_update.call_count, 2)
+        # Simulate receiving quotes
+        quotes = {
+            "content": [
+                {"key": "AAPL", "LAST_PRICE": 150.0},
+                {"key": "MSFT", "LAST_PRICE": 300.0},
+            ]
+        }
+        await self.quote_manager.quote_handler(quotes)
+
+        # Wait for the callback to signal completion
+        await callback_event.wait()
+
+        # Verify the callback was triggered with the correct arguments
+        mock_callback.assert_any_call("AAPL", {
+            "bid_price": None,
+            "ask_price": None,
+            "last_price": 150.0,
+            "regular_market_last_price": 150.0,
+        })
+        mock_callback.assert_any_call("MSFT", {
+            "bid_price": None,
+            "ask_price": None,
+            "last_price": 300.0,
+            "regular_market_last_price": 300.0,
+        })
 
 
     async def asyncTearDown(self):

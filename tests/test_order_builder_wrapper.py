@@ -41,52 +41,58 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             self.assertIsInstance(strategy, fixed_percentage_exit.FixedPercentageExitStrategy)
             self.assertEqual(strategy.strategy_settings, mock_settings['FixedPercentageExit'])
 
+    def test_get_open_positions(self):
+        asyncio.run(self.async_test_get_open_positions())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_get_open_positions(self, mock_init):
+    async def async_test_get_open_positions(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
 
-        # Mock open positions data in MongoDB
-        # Mock open positions data in MongoDB
         mock_open_positions = [
             {"Symbol": "AAPL", "Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"},
             {"Symbol": "GOOG", "Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"},
             {"Symbol": "TSLA", "Trader": "OtherUser", "Account_ID": "other_account", "Strategy": "Strategy_B"}
         ]
-        # Modify the mock find method to return filtered positions
-        self.api_trader.mongo.open_positions.find.return_value = [
+
+        # Mock open_positions.find to mimic AsyncIOMotorCursor
+        mock_open_positions_cursor = AsyncMock()
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=[
             position for position in mock_open_positions if position["Trader"] == "TestUser" and position["Account_ID"] == "test_account"
-        ]
+        ])  # Mock `to_list`
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
 
         # Call the get_open_positions method
-        result = self.api_trader.get_open_positions(self.api_trader.user, self.api_trader.account_id, "Strategy_A")
+        result = await self.api_trader.get_open_positions(self.api_trader.user, self.api_trader.account_id, "Strategy_A")
 
         # Assertions
-        self.api_trader.mongo.open_positions.find.assert_called_once_with(
+        self.api_trader.async_mongo.open_positions.find.assert_called_once_with(
             {"Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"}
         )
         self.assertEqual(len(result), 2)  # Only positions for "TestUser" and "test_account" should be returned
         self.assertIn("AAPL", [pos["Symbol"] for pos in result])
         self.assertIn("GOOG", [pos["Symbol"] for pos in result])
         self.assertNotIn("TSLA", [pos["Symbol"] for pos in result])
-    
+
+    def test_get_current_strategy_allocation(self):
+        asyncio.run(self.async_test_get_current_strategy_allocation())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_get_current_strategy_allocation(self, mock_init):
+    async def async_test_get_current_strategy_allocation(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock the open positions returned by get_open_positions
         mock_open_positions = [
@@ -94,58 +100,79 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 5, "Entry_Price": 1000.00},
             {"Symbol": "TSLA", "Strategy": "Strategy_B", "Qty": 8, "Entry_Price": 700.00},
         ]
-        
-        strategy = "Strategy_A"
+
+        # Mock the queued positions returned by get_queued_positions
+        mock_queued_positions = [
+            {"Symbol": "MSFT", "Strategy": "Strategy_A", "Qty": 2, "Entry_Price": 200.00},
+        ]
 
         # Ensure get_open_positions returns only the open positions for Strategy_A
         self.api_trader.get_open_positions.return_value = [
-            position for position in mock_open_positions if position["Strategy"] == strategy
+            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
+        ]
+
+        # Ensure get_queued_positions returns only the queued positions for Strategy_A
+        self.api_trader.get_queued_positions.return_value = [
+            position for position in mock_queued_positions if position["Strategy"] == "Strategy_A"
         ]
 
         # Call the method under test
-        result = self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
+        strategy = "Strategy_A"
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
-        # Expected result: (10 * 150.00) + (5 * 1000.00) = 1500 + 5000 = 6500
-        expected_allocation = 6500.00
+        # Expected result: 
+        # (10 * 150.00) + (5 * 1000.00) + (2 * 200.00) = 1500 + 5000 + 400 = 6900
+        expected_allocation = 6900.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_called_once()  # Ensure open positions are fetched
-        self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.assertEqual(result, expected_allocation)
 
+    def test_get_current_strategy_allocation_no_positions(self):
+        asyncio.run(self.async_test_get_current_strategy_allocation_no_positions())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_get_current_strategy_allocation_no_positions(self, mock_init):
+    async def async_test_get_current_strategy_allocation_no_positions(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
-        # Simulate no open positions for the strategy
+        # Simulate no open or queued positions for the strategy
         self.api_trader.get_open_positions.return_value = []
+        self.api_trader.get_queued_positions.return_value = []
 
         # Call the method under test
         strategy = "Strategy_A"
-        result = self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
         # Expected result: No positions, so allocation should be 0
         self.assertEqual(result, 0.0)
 
+        # Verify that the async methods are awaited
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+
+    def test_get_current_strategy_allocation_with_outstanding_orders(self):
+        asyncio.run(self.async_test_get_current_strategy_allocation_with_outstanding_orders())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_get_current_strategy_allocation_with_outstanding_orders(self, mock_init):
+    async def async_test_get_current_strategy_allocation_with_outstanding_orders(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
-        self.api_trader.get_queued_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock the open positions returned by get_open_positions
         mock_open_positions = [
@@ -153,9 +180,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 5, "Entry_Price": 1000.00},
             {"Symbol": "TSLA", "Strategy": "Strategy_B", "Qty": 8, "Entry_Price": 700.00},
         ]
-        
-        # Ensure get_open_positions returns the mock data
-        self.api_trader.get_open_positions.return_value = mock_open_positions
 
         # Mock the outstanding orders in the queue for the same strategy
         mock_queued_orders = [
@@ -163,21 +187,18 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 3, "Entry_Price": 995.00, "Order_Status": "QUEUED"},
         ]
 
-        # Ensure get_open_positions returns the mock data
-        self.api_trader.get_queued_positions.return_value = mock_queued_orders
-
-        strategy = "Strategy_A"
         # Ensure get_open_positions returns only the open positions for Strategy_A
         self.api_trader.get_open_positions.return_value = [
-            position for position in mock_open_positions if position["Strategy"] == strategy
+            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
         ]
         # Ensure get_queued_positions returns only the queued orders for Strategy_A
         self.api_trader.get_queued_positions.return_value = [
-            order for order in mock_queued_orders if order["Strategy"] == strategy
+            order for order in mock_queued_orders if order["Strategy"] == "Strategy_A"
         ]
 
         # Call the method under test
-        result = self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
+        strategy = "Strategy_A"
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
         # Expected result:
         # From open positions: (10 * 150.00) + (5 * 1000.00) = 1500 + 5000 = 6500
@@ -186,21 +207,24 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         expected_allocation = 10210.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_called_once()  # Ensure open positions are fetched
-        self.api_trader.get_queued_positions.assert_called_once()  # Ensure queued orders are fetched
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
         self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
 
+    def test_get_current_strategy_allocation_zero_qty_or_price(self):
+        asyncio.run(self.async_test_get_current_strategy_allocation_zero_qty_or_price())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_get_current_strategy_allocation_zero_qty_or_price(self, mock_init):
+    async def async_test_get_current_strategy_allocation_zero_qty_or_price(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock positions with zero quantities or entry prices
         mock_open_positions = [
@@ -208,61 +232,77 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 5, "Entry_Price": 0.00},   # Zero entry price
             {"Symbol": "TSLA", "Strategy": "Strategy_A", "Qty": 10, "Entry_Price": 100.00}  # Valid position
         ]
-        
-        # Ensure get_open_positions returns the mock data
-        self.api_trader.get_open_positions.return_value = mock_open_positions
+
+        # Mock the async behavior of get_open_positions
+        self.api_trader.get_open_positions.return_value = [
+            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
+        ]
+
+        # Mock the queued positions (return empty as we're not testing queued positions here)
+        self.api_trader.get_queued_positions.return_value = []
 
         # Call the method under test
         strategy = "Strategy_A"
-        result = self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
         # Expected result: Only the valid position (10 * 100.00) = 1000
         expected_allocation = 1000.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_called_once()  # Ensure open positions are fetched
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
         self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
 
+    def test_option_allocation(self):
+        asyncio.run(self.async_test_option_allocation())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_option_allocation(self, mock_init):
+    async def async_test_option_allocation(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
-        self.api_trader.get_queued_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
-        """Test strategy allocation calculation for options."""
+        # Test strategy allocation calculation for options
         mock_open_positions = [{"Qty": 2, "Entry_Price": 3.0, "Asset_Type": "OPTION"}]
         mock_queued_positions = [{"Qty": 1, "Entry_Price": 4.0, "Asset_Type": "OPTION"}]
 
-        # Ensure get_open_positions returns the mock data
+        # Ensure get_open_positions and get_queued_positions return mock data
         self.api_trader.get_open_positions.return_value = mock_open_positions
         self.api_trader.get_queued_positions.return_value = mock_queued_positions
-        
-        allocation = self.api_trader.get_current_strategy_allocation("TestStrategy", "User123", "Acc123")
-        
-        # (2 * 3 * 100) + (1 * 4 * 100) = 600 + 400 = 1000
-        self.assertEqual(allocation, 1000)
 
+        # Call the method under test
+        allocation = await self.api_trader.get_current_strategy_allocation("TestStrategy", self.api_trader.user, self.api_trader.account_id)
+
+        # Expected allocation: (2 * 3 * 100) + (1 * 4 * 100) = 600 + 400 = 1000
+        expected_allocation = 1000
+
+        # Assertions
+        self.assertEqual(allocation, expected_allocation)
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
+
+    def test_mixed_allocation(self):
+        asyncio.run(self.async_test_mixed_allocation())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    def test_mixed_allocation(self, mock_init):
+    async def async_test_mixed_allocation(self, mock_init):
         # Create an instance of ApiTrader
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = AsyncMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = MagicMock()
-        self.api_trader.get_queued_positions = MagicMock()
+        self.api_trader.get_open_positions = AsyncMock()
+        self.api_trader.get_queued_positions = AsyncMock()
 
-        """Test strategy allocation calculation for a mix of equities and options."""
+        # Test strategy allocation calculation for a mix of equities and options
         mock_open_positions = [
             {"Qty": 10, "Entry_Price": 50.0, "Asset_Type": "EQUITY"},
             {"Qty": 2, "Entry_Price": 3.0, "Asset_Type": "OPTION"}
@@ -271,15 +311,25 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Qty": 5, "Entry_Price": 45.0, "Asset_Type": "EQUITY"},
             {"Qty": 1, "Entry_Price": 4.0, "Asset_Type": "OPTION"}
         ]
-        
-        # Ensure get_open_positions returns the mock data
+
+        # Ensure get_open_positions and get_queued_positions return mock data
         self.api_trader.get_open_positions.return_value = mock_open_positions
         self.api_trader.get_queued_positions.return_value = mock_queued_positions
 
-        allocation = self.api_trader.get_current_strategy_allocation("TestStrategy", "User123", "Acc123")
-        
-        # (10 * 50) + (5 * 45) + (2 * 3 * 100) + (1 * 4 * 100) = 725 + 600 + 400 = 1725
-        self.assertEqual(allocation, 1725)
+        # Call the method under test
+        allocation = await self.api_trader.get_current_strategy_allocation("TestStrategy", self.api_trader.user, self.api_trader.account_id)
+
+        # Expected allocation:
+        # Equities: (10 * 50) + (5 * 45) = 725
+        # Options: (2 * 3 * 100) + (1 * 4 * 100) = 600 + 400 = 1000
+        # Total: 725 + 1000 = 1725
+        expected_allocation = 1725
+
+        # Assertions
+        self.assertEqual(allocation, expected_allocation)
+        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
+        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
+
 
     def test_standard_order_open_position(self):
         asyncio.run(self.async_test_standard_order_open_position())
@@ -386,7 +436,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_blocked_when_exceeding_max_position_size(self, mock_init):
-        # Set up the mock behavior for tdameritrade.getQuote()
+        # Set up the mock behavior for tdameritrade.getQuoteAsync
         mock_quote_response = {
             "AAPL": {
                 "quote": {
@@ -405,42 +455,60 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         }
         
         # Mock strategy settings with a MaxPositionSize of $5000
-        # This should result in a new allocation of $1500, exceeding the $5000 limit
         strategy_object = {
-            'Position_Size': 1500,
-            'MaxPositionSize': 5000,
-            'Order_Type': 'limit',
-            'Position_Type': 'equity',
-            'Active': True
+            "Position_Size": 1500,
+            "MaxPositionSize": 5000,
+            "Order_Type": "limit",
+            "Position_Type": "equity",
+            "Active": True
         }
 
         api_trader = ApiTrader()
-        api_trader.user = MagicMock()
-        api_trader.account_id = MagicMock()
-        api_trader.tdameritrade = MagicMock()
+        api_trader.user = {"Name": "TestUser"}
+        api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
+        # Mock tdameritrade.getQuoteAsync to return mock_quote_response
+        api_trader.tdameritrade = MagicMock()
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=mock_quote_response)
 
-        # Set current allocated and mock new order size
-        api_trader.get_current_strategy_allocation = MagicMock(return_value=4000)
+        # Mock current allocated value to simulate a near-limit scenario
+        api_trader.get_current_strategy_allocation = AsyncMock(return_value=4000)
 
-        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        # Call standardOrder method under test
+        result = await api_trader.standardOrder(
+            trade_data, 
+            strategy_object, 
+            direction="OPEN POSITION", 
+            user=api_trader.user, 
+            account_id=api_trader.account_id
+        )
 
         # Verify the order was blocked
-        self.assertIsNone(result[0])
+        self.assertIsNone(result[0])  # The order should not be created
         api_trader.logger.warning.assert_called_with(
             f"Order stopped: BUY order for AAPL not placed. "
             f"Required position size $5500.0 exceeds max position size for this strategy. "
             f"Strategy status: {strategy_object['Active']}, Shares: 10, Max position size: $5000"
         )
 
+        # Verify that tdameritrade.getQuoteAsync was called with the correct symbol
+        api_trader.tdameritrade.getQuoteAsync.assert_awaited_once_with("AAPL")
+        
+        # Adjusted assertion for get_current_strategy_allocation
+        api_trader.get_current_strategy_allocation.assert_awaited_once_with(
+            "FixedPercentageExit",  # Ensure keyword arguments are used
+            user=api_trader.user,            # Ensure keyword arguments are used
+            account_id=api_trader.account_id # Ensure keyword arguments are used
+        )
+
+
     def test_order_processed_when_within_max_position_size(self):
         asyncio.run(self.async_test_order_processed_when_within_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_processed_when_within_max_position_size(self, mock_init):
-
+        # Mock quote response
         mock_quote_response = {
             "AAPL": {
                 "quote": {
@@ -460,37 +528,55 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
         # Mock strategy settings with a MaxPositionSize of $5000
         strategy_object = {
-            'Position_Size': 1500,
-            'MaxPositionSize': 5000,
-            'Order_Type': 'limit',
-            'Position_Type': 'equity',
-            'Active': True
+            "Position_Size": 1500,
+            "MaxPositionSize": 5000,
+            "Order_Type": "limit",
+            "Position_Type": "equity",
+            "Active": True
         }
 
         api_trader = ApiTrader()
-        api_trader.user = MagicMock()
-        api_trader.account_id = MagicMock()
-        api_trader.tdameritrade = MagicMock()
+        api_trader.user = {"Name": "TestUser"}
+        api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
+        # Mock tdameritrade.getQuoteAsync to return mock_quote_response
+        api_trader.tdameritrade = MagicMock()
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=mock_quote_response)
 
-        # Set current allocated and mock new order size
-        api_trader.get_current_strategy_allocation = MagicMock(return_value=3000)
+        # Mock current allocated value to simulate available capacity
+        api_trader.get_current_strategy_allocation = AsyncMock(return_value=3000)
 
         # Call standardOrder
-        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(
+            trade_data,
+            strategy_object,
+            direction="OPEN POSITION",
+            user=api_trader.user,
+            account_id=api_trader.account_id
+        )
 
         # Verify the order was processed
         self.assertIsNotNone(result[0])  # Ensure order is placed
         api_trader.logger.warning.assert_not_called()
         api_trader.logger.error.assert_not_called()
+
+        # Verify tdameritrade.getQuoteAsync was called with the correct symbol
+        api_trader.tdameritrade.getQuoteAsync.assert_awaited_once_with("AAPL")
+
+        # Verify get_current_strategy_allocation with positional and keyword arguments
+        api_trader.get_current_strategy_allocation.assert_awaited_once_with(
+            "FixedPercentageExit",  # Positional argument for strategy
+            user=api_trader.user,   # Keyword argument for user
+            account_id=api_trader.account_id  # Keyword argument for account_id
+        )
     
     def test_order_processed_when_at_exact_max_position_size(self):
         asyncio.run(self.async_test_order_processed_when_at_exact_max_position_size())
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_processed_when_at_exact_max_position_size(self, mock_init):
+        # Mock quote response
         mock_quote_response = {
             "AAPL": {
                 "quote": {
@@ -510,31 +596,49 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
         # Mock strategy settings with a MaxPositionSize of $5000
         strategy_object = {
-            'Position_Size': 1500,
-            'MaxPositionSize': 5000,
-            'Order_Type': 'limit',
-            'Position_Type': 'equity',
-            'Active': True
+            "Position_Size": 1500,
+            "MaxPositionSize": 5000,
+            "Order_Type": "limit",
+            "Position_Type": "equity",
+            "Active": True
         }
 
+        # Create ApiTrader instance and set up mocks
         api_trader = ApiTrader()
-        api_trader.user = MagicMock()
-        api_trader.account_id = MagicMock()
-        api_trader.tdameritrade = MagicMock()
+        api_trader.user = {"Name": "TestUser"}
+        api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
 
-        api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
+        # Mock tdameritrade.getQuoteAsync to return mock_quote_response
+        api_trader.tdameritrade = MagicMock()
+        api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=mock_quote_response)
 
-        # Set current allocated and mock new order size
-        api_trader.get_current_strategy_allocation = MagicMock(return_value=3500)
+        # Mock current allocated value to match the MaxPositionSize after the new order
+        api_trader.get_current_strategy_allocation = AsyncMock(return_value=3500)
 
         # Call standardOrder
-        result = await api_trader.standardOrder(trade_data, strategy_object, direction='OPEN POSITION', user=api_trader.user, account_id=api_trader.account_id)
+        result = await api_trader.standardOrder(
+            trade_data,
+            strategy_object,
+            direction="OPEN POSITION",
+            user=api_trader.user,
+            account_id=api_trader.account_id
+        )
 
         # Verify the order was processed
         self.assertIsNotNone(result[0])  # Ensure order is placed
         api_trader.logger.warning.assert_not_called()
         api_trader.logger.error.assert_not_called()
+
+        # Verify tdameritrade.getQuoteAsync was called with the correct symbol
+        api_trader.tdameritrade.getQuoteAsync.assert_awaited_once_with("AAPL")
+
+        # Verify get_current_strategy_allocation with positional and keyword arguments
+        api_trader.get_current_strategy_allocation.assert_awaited_once_with(
+            "FixedPercentageExit",  # Strategy
+            user=api_trader.user,   # User
+            account_id=api_trader.account_id  # Account ID
+        )
 
     def test_order_processed_without_max_position_size(self):
         asyncio.run(self.async_test_order_processed_without_max_position_size())

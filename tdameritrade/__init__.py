@@ -25,7 +25,7 @@ CALLBACK_URL = os.getenv("CALLBACK_URL")
 
 class TDAmeritrade:
 
-    def __init__(self, mongo, user, account_id, logger, push_notification):
+    def __init__(self, async_mongo, user, account_id, logger, push_notification):
 
         self.user = user
 
@@ -33,7 +33,7 @@ class TDAmeritrade:
 
         self.logger = logger
 
-        self.users = mongo.users
+        self.async_mongo = async_mongo
 
         self.push_notification = push_notification
 
@@ -57,7 +57,7 @@ class TDAmeritrade:
 
         self.registered_handlers = {"equity": set(), "option": set()}
 
-        self.loop = asyncio.get_running_loop()
+        # self.loop = asyncio.get_running_loop()
 
     @exception_handler
     async def initialConnect(self):
@@ -106,7 +106,7 @@ class TDAmeritrade:
                 self.logger.warning("Token has expired or is about to expire.")
 
         # Retrieve user data and refresh or generate a new token
-        user = self.users.find_one({"Name": self.user["Name"]})
+        user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
         token_path = user["Accounts"][self.account_id]["token_path"]
 
         if os.path.isfile(token_path):
@@ -127,7 +127,7 @@ class TDAmeritrade:
             self.stream_client = StreamClient(client=self.async_client)
 
         # ADD NEW TOKEN DATA TO USER DATA IN DB
-        self.users.update_one({"Name": self.user["Name"]}, {
+        await self.async_mongo.users.update_one({"Name": self.user["Name"]}, {
             "$set": {f"{self.account_id}.refresh_exp_date": (self.token_expiration).strftime("%Y-%m-%d")}})
 
         self.logger.info("Token refreshed successfully.")
@@ -156,19 +156,12 @@ class TDAmeritrade:
             [json]: ACCOUNT DATA
         """
 
-        # fields = up.quote("positions,orders")
-
-        # url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}?fields={fields}"
-
-        # return self.sendRequest(url)
-
         isValid = await self.checkTokenValidityAsync()
 
         if isValid:
-            resp = self.async_client.get_account_numbers()
+            resp = await self.async_client.get_account_numbers()
             if resp.status_code == httpx.codes.OK:
-                # The response has the following structure. If you have multiple linked
-                # accounts, you'll need to inspect this object to find the hash you want:
+                # The response has the following structure:
                 # [
                 #    {
                 #        "accountNumber": "123456789",
@@ -176,11 +169,13 @@ class TDAmeritrade:
                 #    }
                 #]
                 account_hash = resp.json()[0]['hashValue']
-                return self.async_client.get_account(account_hash).json()
+                account_resp = await self.async_client.get_account(account_hash)
+                return account_resp.json()  # Ensure this is the final awaited object
             else:
-                return
+                return None
         else:
-            return
+            return None
+
 
     async def placeTDAOrderAsync(self, data):
         """Method places order and retrieves full order details if necessary.
@@ -251,7 +246,7 @@ class TDAmeritrade:
             [json]: BUYING POWER
         """
 
-        account = self.getAccount()
+        account = await self.getAccount()
 
         # buying_power = account["securitiesAccount"]["initialBalances"]["cashAvailableForTrading"]
         buying_power = account["securitiesAccount"]["initialBalances"]["cashBalance"]
@@ -279,20 +274,8 @@ class TDAmeritrade:
                 if "/" in symbol:
                     response = await self.async_client.get_quotes(symbol)
                 else:
-                    # self.logger.debug(f"Current event loop in getQuoteAsync: {asyncio.get_event_loop()} ({modifiedAccountID(self.account_id)})")
-                    # response = await self.async_client.get_quote(symbol)
-                    try:
-                        self.logger.debug(f"Starting get_quote for {symbol} ({modifiedAccountID(self.account_id)})")
-                        response = await self.async_client.get_quote(symbol)
-                        self.logger.debug(f"Received response for {symbol} ({modifiedAccountID(self.account_id)}): {response}")
-                    except asyncio.CancelledError as e:
-                        self.logger.error(f"get_quote for {symbol} was cancelled. ({modifiedAccountID(self.account_id)}): {e}")
-                        raise
-                    except Exception as e:
-                        self.logger.error(f"Exception during get_quote for {symbol} ({modifiedAccountID(self.account_id)}): {e}")
-                        raise
+                    response = await self.async_client.get_quote(symbol)
 
-                # Check if the response status is not 200
                 if response.status_code != 200:
                     self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
                     return None
@@ -481,7 +464,7 @@ class TDAmeritrade:
                 if attempt < retries - 1:
                     await asyncio.sleep(delay)
                 else:
-                    raise RuntimeError("Failed to reconnect after retries. ({modifiedAccountID(self.account_id)})")
+                    raise RuntimeError(f"Failed to reconnect after retries. ({modifiedAccountID(self.account_id)})")
 
 
     async def _safe_disconnect_streaming(self):
@@ -565,7 +548,7 @@ class TDAmeritrade:
         else:
             return
 
-    def cancelOrder(self, id):
+    async def cancelOrder(self, id):
         """ METHOD CANCELS ORDER
 
         Args:
@@ -579,10 +562,10 @@ class TDAmeritrade:
 
         # return self.sendRequest(url, method="DELETE")
 
-        isValid = self.checkTokenValidity()
+        isValid = await self.checkTokenValidityAsync()
 
         if isValid:
-            resp = self.client.get_account_numbers()
+            resp = await self.async_client.get_account_numbers()
             if resp.status_code == httpx.codes.OK:
                 # The response has the following structure. If you have multiple linked
                 # accounts, you'll need to inspect this object to find the hash you want:
@@ -595,7 +578,7 @@ class TDAmeritrade:
                 account_hash = resp.json()[0]['hashValue']
             
                 try:
-                    response = self.client.cancel_order(id, account_hash)
+                    response = await self.async_client.cancel_order(id, account_hash)
 
                     # Check if the response status is not 200
                     if response.status_code != 200:

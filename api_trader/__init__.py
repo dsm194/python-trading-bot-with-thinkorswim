@@ -19,7 +19,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 class ApiTrader(Tasks, OrderBuilderWrapper):
 
-    def __init__(self, user, mongo, async_mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
+    def __init__(self, user, async_mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
         """
         Args:
             user ([dict]): [USER DATA FOR CURRENT INSTANCE]
@@ -37,21 +37,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             # Instance variables
             self.user = user
-            self.mongo = mongo
             self.async_mongo = async_mongo
             self.push = push
             self.logger = logger
             self.account_id = account_id
             self.tdameritrade = tdameritrade
-
-            # MongoDB collections
-            self.users = mongo.users
-            self.open_positions = mongo.open_positions
-            self.closed_positions = mongo.closed_positions
-            self.strategies = mongo.strategies
-            self.rejected = mongo.rejected
-            self.canceled = mongo.canceled
-            self.queue = mongo.queue
 
             self.no_ids_list = []
             
@@ -60,7 +50,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
             # Initialize parent classes
             Tasks.__init__(self, self.quote_manager, self.position_updater)
-            OrderBuilderWrapper.__init__(self, mongo)
+            OrderBuilderWrapper.__init__(self, async_mongo)
 
             # Path to the stop signal file
             self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')

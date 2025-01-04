@@ -109,7 +109,7 @@ class Tasks:
         }).to_list(None)  # Convert cursor to a list
 
         # Fetch strategies from MongoDB and add any new strategies to the class-level dictionary
-        strategies = self.strategies.find({"Account_ID": self.account_id})
+        strategies = await self.async_mongo.strategies.find({"Account_ID": self.account_id}).to_list(None)
 
         # Group positions by symbol and minimize API calls
         async with self.lock:
@@ -386,7 +386,7 @@ class Tasks:
 
 
     @exception_handler
-    def addNewStrategy(self, strategy, asset_type):
+    async def addNewStrategy(self, strategy, asset_type):
         """ METHOD UPDATES STRATEGIES OBJECT IN MONGODB WITH NEW STRATEGIES.
 
         Args:
@@ -405,7 +405,7 @@ class Tasks:
 
         # IF STRATEGY NOT IN STRATEGIES COLLECTION IN MONGO, THEN ADD IT
 
-        self.strategies.update_one(
+        await self.async_mongo.strategies.update_one(
             {"Account_ID": self.account_id, "Strategy": strategy, "Asset_Type": asset_type},
             {"$setOnInsert": obj},
             upsert=True

@@ -114,7 +114,13 @@ class QuoteManager:
         for callback in self.callbacks:
             if callback:
                 tasks.append(asyncio.create_task(self._invoke_callback(callback, symbol, quote)))
-        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Gather results and handle exceptions
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error(f"Callback error for {symbol}: {result}")
+
     
     async def _invoke_callback(self, callback, symbol, quote):
         """Invoke a callback, handling both async and sync functions."""

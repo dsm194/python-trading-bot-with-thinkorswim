@@ -106,9 +106,9 @@ class Main:
 
     async def _setup_trader(self, user, account_id):
         push_notification = PushNotification(user["deviceID"], self.logger)
-        tdameritrade = TDAmeritrade(self.mongo, user, account_id, self.logger, push_notification)
+        tdameritrade = TDAmeritrade(self.async_mongo, user, account_id, self.logger, push_notification)
         if await tdameritrade.initialConnect():
-            self.traders[account_id] = ApiTrader(user, self.mongo, self.async_mongo, push_notification, self.logger, int(account_id), tdameritrade, self.quote_manager_pool)
+            self.traders[account_id] = ApiTrader(user, self.async_mongo, push_notification, self.logger, int(account_id), tdameritrade, self.quote_manager_pool)
         else:
             self.logger.warning(f"Failed to connect to account ({modifiedAccountID(account_id)}). Adding to not_connected list.")
             self.not_connected.append(account_id)
