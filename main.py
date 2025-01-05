@@ -74,8 +74,6 @@ class Main:
         self.loop = asyncio.get_event_loop()
         self.quote_manager_pool = QuoteManagerPool(loop=self.loop)
 
-        self.quote_manager_pool = QuoteManagerPool()
-
         if mongo_connected and gmail_connected:
             self.traders = {}
             self.accounts = []

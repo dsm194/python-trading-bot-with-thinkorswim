@@ -68,7 +68,7 @@ class TestPositionUpdater(unittest.IsolatedAsyncioTestCase):
 
     async def test_monitor_queue(self):
         """Test the queue monitoring logs the queue size periodically."""
-        with patch.object(self.logger_mock, 'info') as mock_log:
+        with patch.object(self.logger_mock, 'debug') as mock_log:
             await self.position_updater.start_workers()
 
             monitor_task = asyncio.create_task(self.position_updater.monitor_queue())

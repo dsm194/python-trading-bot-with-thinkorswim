@@ -76,5 +76,5 @@ class PositionUpdater:
     async def monitor_queue(self):
         """Monitor the queue size periodically."""
         while not self.stop_event.is_set():
-            self.logger.info(f"Update queue size: {self.update_queue.qsize()}, Cache size: {len(self.update_cache)}")
+            self.logger.debug(f"Update queue size: {self.update_queue.qsize()}, Cache size: {len(self.update_cache)}")
             await asyncio.sleep(self.batch_interval)
