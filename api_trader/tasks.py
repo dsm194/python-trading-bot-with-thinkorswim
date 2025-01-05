@@ -411,3 +411,9 @@ class Tasks:
             {"$setOnInsert": obj},
             upsert=True
         )
+
+        # Retrieve and return the newly created (or existing) strategy
+        strategy_object = await self.async_mongo.strategies.find_one(
+            {"Account_ID": self.account_id, "Strategy": strategy, "Asset_Type": asset_type}
+        )
+        return strategy_object
