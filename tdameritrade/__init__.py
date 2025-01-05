@@ -3,12 +3,13 @@ import asyncio
 from datetime import datetime, timedelta
 import time
 import httpx
+from prompt_toolkit import PromptSession
 import websockets
 from assets.helper_functions import getUTCDatetime, modifiedAccountID
 from assets.exception_handler import exception_handler
 
 from schwab.auth import client_from_manual_flow
-from schwab.auth import client_from_token_file
+from schwab.auth import client_from_token_file, __make_update_token_func as make_update_token_func, client_from_received_url, get_auth_context
 from schwab.client.base import BaseClient as schwabBaseClient
 from schwab.utils import Utils
 from schwab.streaming import StreamClient
@@ -115,7 +116,7 @@ class TDAmeritrade:
             self.async_client = client_from_token_file(token_path, API_KEY, APP_SECRET, asyncio=True)
         else:
             self.logger.warning("Failed to find token file '%s'", token_path)
-            self.async_client = client_from_manual_flow(API_KEY, APP_SECRET, CALLBACK_URL, token_path, asyncio=True)
+            self.async_client = await self.async_client_from_manual_flow(token_path)
 
         if not self.async_client:
             self.logger.error(f"Failed to initialize clients. ({modifiedAccountID(self.account_id)})")
@@ -135,21 +136,54 @@ class TDAmeritrade:
         self.logger.info("Token refreshed successfully.")
         return True
 
-    def refresh_token(self, token_path):
-        """
-        Refreshes the token using the file or manual flow.
+    async def async_client_from_manual_flow(self, token_path):
 
-        Args:
-            token_path (str): Path to the token file.
+        auth_context = get_auth_context(API_KEY, CALLBACK_URL)
 
-        Returns:
-            client: The refreshed client object.
-        """
-        if os.path.isfile(token_path):
-            return client_from_token_file(token_path, API_KEY, APP_SECRET)
-        else:
-            self.logger.warning("Token file missing: '%s'. Initiating manual flow.", token_path)
-            return client_from_manual_flow(API_KEY, APP_SECRET, CALLBACK_URL, token_path)
+        print('\n**************************************************************\n')
+        print('This is the manual login and token creation flow for schwab-py.')
+        print('Please follow these instructions exactly:')
+        print()
+        print(' 1. Open the following link by copy-pasting it into the browser')
+        print('    of your choice:')
+        print()
+        print('        ' + auth_context.authorization_url)
+        print()
+        print(' 2. Log in with your account credentials. You may be asked to')
+        print('    perform two-factor authentication using text messaging or')
+        print('    another method, as well as whether to trust the browser.')
+        print()
+        print(' 3. When asked whether to allow your app access to your account,')
+        print('    select "Allow".')
+        print()
+        print(' 4. Your browser should be redirected to your callback URI. Copy')
+        print('    the ENTIRE address, paste it into the following prompt, and press')
+        print('    Enter/Return.')
+        print()
+        print('If you encounter any issues, see here for troubleshooting:')
+        print('https://schwab-py.readthedocs.io/en/latest/auth.html#troubleshooting')
+        print('\n**************************************************************\n')
+
+        if CALLBACK_URL.startswith('http://'):
+            print(('WARNING: Your callback URL ({}) will transmit data over HTTP, ' +
+                'which is a potentially severe security vulnerability. ' +
+                'Please go to your app\'s configuration with Schwab ' +
+                'and update your callback URL to begin with \'https\' ' +
+                'to stop seeing this message.').format(CALLBACK_URL))
+
+        token_write_func = None
+
+        # Use asynchronous prompt for user input
+        session = PromptSession()
+        received_url = await session.prompt_async("Redirect URL> ")
+
+        token_write_func = (
+            make_update_token_func(token_path) if token_write_func is None
+            else token_write_func)
+
+        return client_from_received_url(
+                API_KEY, APP_SECRET, auth_context, received_url, token_write_func, 
+                asyncio, True)
 
     async def getAccount(self):
         """ METHOD GET ACCOUNT DATA

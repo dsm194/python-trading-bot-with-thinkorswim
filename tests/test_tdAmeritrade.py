@@ -93,7 +93,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.mongo_mock.users.update_one.assert_called_once()
 
     @patch('tdameritrade.client_from_token_file')  # Mock client_from_token_file
-    @patch('tdameritrade.client_from_manual_flow')  # Mock client_from_manual_flow
+    @patch('tdameritrade.TDAmeritrade.async_client_from_manual_flow')  # Mock client_from_manual_flow
     @patch('tdameritrade.os.path.isfile')  # Mock os.path.isfile
     async def test_checkTokenValidity_token_does_not_exist(
         self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file
