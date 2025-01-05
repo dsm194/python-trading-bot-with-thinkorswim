@@ -128,7 +128,12 @@ class Main:
             ]
             self.logger.debug(f"Waiting for {len(tasks)} tasks to complete...")
             try:
-                results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=30)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, asyncio.CancelledError):
+                        self.logger.info("Task was cancelled gracefully.")
+                    elif isinstance(result, Exception):
+                        self.logger.error(f"Task raised an exception: {result}")
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout while waiting for tasks to complete.")
                 for task in tasks:

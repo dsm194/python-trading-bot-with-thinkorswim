@@ -255,6 +255,7 @@ class TDAmeritrade:
 
         return float(buying_power)
 
+    @exception_handler
     async def getQuoteAsync(self, symbol):
         """
         Retrieves the most recent quote for a stock asynchronously.

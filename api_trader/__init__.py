@@ -331,17 +331,10 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Trader: {self.user['Name']}"
 
         elif direction == "CLOSE POSITION":
-            try:
-                position = await self.async_mongo.open_positions.find_one(
-                    {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-                )
-                self.logger.debug(f"Query result for {symbol}: {position}")
-            except asyncio.CancelledError:
-                self.logger.warning(f"Task for {symbol} in pushOrder was cancelled.")
-                raise  # Reraise the cancellation to propagate it
-            except Exception as e:
-                self.logger.error(f"Query failed for {symbol}: {e}")
-                position = None
+            position = await self.async_mongo.open_positions.find_one(
+                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+            )
+            self.logger.debug(f"Query result for {symbol}: {position}")
 
             if position is not None:
                 obj.update({
@@ -398,76 +391,80 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
     # RUN TRADER
     @exception_handler
     async def runTrader(self, trade_data):
-        self.logger.debug(f"runTrader started with trade_data ({modifiedAccountID(self.account_id)}): {trade_data}")
+        try:
+            self.logger.debug(f"runTrader started with trade_data ({modifiedAccountID(self.account_id)}): {trade_data}")
 
-        # Update all order statuses
-        await self.updateStatus()
+            # Update all order statuses
+            await self.updateStatus()
 
-        # Update user attribute
-        self.user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
+            # Update user attribute
+            self.user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
 
-        user_name = self.user["Name"]
-        account_id = self.account_id
+            user_name = self.user["Name"]
+            account_id = self.account_id
 
-        forbidden_symbols = {
-            doc['Symbol'] for doc in await self.async_mongo.forbidden.find({"Account_ID": account_id}).to_list(None)
-        }
+            forbidden_symbols = {
+                doc['Symbol'] for doc in await self.async_mongo.forbidden.find({"Account_ID": account_id}).to_list(None)
+            }
 
-        for row in trade_data:
-            strategy = row["Strategy"]
-            symbol = row["Symbol"]
-            side = row["Side"]
+            for row in trade_data:
+                strategy = row["Strategy"]
+                symbol = row["Symbol"]
+                side = row["Side"]
 
-            # Fetch open position, queued order, and strategy for the current row
-            open_position = await self.async_mongo.open_positions.find_one(
-                {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-            )
-            queued_order = await self.async_mongo.queue.find_one(
-                {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-            )
-            strategy_object = await self.async_mongo.strategies.find_one(
-                {"Strategy": strategy, "Account_ID": account_id}
-            )
+                # Fetch open position, queued order, and strategy for the current row
+                open_position = await self.async_mongo.open_positions.find_one(
+                    {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+                )
+                queued_order = await self.async_mongo.queue.find_one(
+                    {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+                )
+                strategy_object = await self.async_mongo.strategies.find_one(
+                    {"Strategy": strategy, "Account_ID": account_id}
+                )
 
-            # Add new strategy if it doesn't exist
-            if not strategy_object:
-                strategy_object = await self.addNewStrategy(strategy, row["Asset_Type"])
+                # Add new strategy if it doesn't exist
+                if not strategy_object:
+                    strategy_object = await self.addNewStrategy(strategy, row["Asset_Type"])
 
-            position_type = strategy_object["Position_Type"]
-            row["Position_Type"] = position_type
+                position_type = strategy_object["Position_Type"]
+                row["Position_Type"] = position_type
 
-            # Skip processing if the order is already queued
-            if queued_order:
-                continue
+                # Skip processing if the order is already queued
+                if queued_order:
+                    continue
 
-            # Determine trade direction
-            direction = None
-            if open_position:
-                # Closing existing positions
-                if side == "BUY" and position_type == "SHORT":
-                    direction = "CLOSE POSITION"  # Covering a short
-                elif side == "SELL" and position_type == "LONG":
-                    direction = "CLOSE POSITION"  # Selling a long
-                elif side == "SELL_TO_CLOSE" and position_type == "LONG":
-                    direction = "CLOSE POSITION"  # Selling long option
-                elif side == "BUY_TO_CLOSE" and position_type == "SHORT":
-                    direction = "CLOSE POSITION"  # Covering short option
-                else:
-                    continue  # Skip if none of the above conditions match
-            elif symbol not in forbidden_symbols:
-                # Opening new positions
-                if side == "BUY" and position_type == "LONG":
-                    direction = "OPEN POSITION"  # Going long
-                elif side == "SELL" and position_type == "SHORT":
-                    direction = "OPEN POSITION"  # Shorting
-                elif side == "SELL_TO_OPEN" and position_type == "SHORT":
-                    direction = "OPEN POSITION"  # Opening short option
-                elif side == "BUY_TO_OPEN" and position_type == "LONG":
-                    direction = "OPEN POSITION"  # Opening long option
-                else:
-                    continue  # Skip if none of the above conditions match
+                # Determine trade direction
+                direction = None
+                if open_position:
+                    # Closing existing positions
+                    if side == "BUY" and position_type == "SHORT":
+                        direction = "CLOSE POSITION"  # Covering a short
+                    elif side == "SELL" and position_type == "LONG":
+                        direction = "CLOSE POSITION"  # Selling a long
+                    elif side == "SELL_TO_CLOSE" and position_type == "LONG":
+                        direction = "CLOSE POSITION"  # Selling long option
+                    elif side == "BUY_TO_CLOSE" and position_type == "SHORT":
+                        direction = "CLOSE POSITION"  # Covering short option
+                    else:
+                        continue  # Skip if none of the above conditions match
+                elif symbol not in forbidden_symbols:
+                    # Opening new positions
+                    if side == "BUY" and position_type == "LONG":
+                        direction = "OPEN POSITION"  # Going long
+                    elif side == "SELL" and position_type == "SHORT":
+                        direction = "OPEN POSITION"  # Shorting
+                    elif side == "SELL_TO_OPEN" and position_type == "SHORT":
+                        direction = "OPEN POSITION"  # Opening short option
+                    elif side == "BUY_TO_OPEN" and position_type == "LONG":
+                        direction = "OPEN POSITION"  # Opening long option
+                    else:
+                        continue  # Skip if none of the above conditions match
 
-            # Process the order if a direction is determined
-            if direction:
-                order_data = {**row, **open_position} if open_position else row
-                await self.sendOrder(order_data, strategy_object, direction)
+                # Process the order if a direction is determined
+                if direction:
+                    order_data = {**row, **open_position} if open_position else row
+                    await self.sendOrder(order_data, strategy_object, direction)
+        except asyncio.CancelledError:
+            self.logger.warning("runTrader was cancelled.")
+            raise  # Re-raise to let the task know it's cancelled

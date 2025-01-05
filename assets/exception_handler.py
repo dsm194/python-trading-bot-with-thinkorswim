@@ -1,6 +1,5 @@
 # EXCEPTION HANDLER DECORATOR FOR HANDLER EXCEPTIONS AND LOGGING THEM
 import asyncio
-from assets.helper_functions import modifiedAccountID
 import traceback
 
 
@@ -9,8 +8,12 @@ def exception_handler(func):
         logger = self.logger
         try:
             return await func(self, *args, **kwargs)
+        except asyncio.CancelledError:
+            # Specific handling for task cancellation
+            logger.warning(f"Task was cancelled during {func.__name__}")
+            raise  # Re-raise to propagate the cancellation
         except Exception:
-            msg = f"{self.user['Name']} - {modifiedAccountID(self.account_id)} - {traceback.format_exc()}"
+            msg = f"{func.__name__} - {traceback.format_exc()}"
             logger.error(msg)
             raise
 
@@ -19,7 +22,7 @@ def exception_handler(func):
         try:
             return func(self, *args, **kwargs)
         except Exception:
-            msg = f"{self.user['Name']} - {modifiedAccountID(self.account_id)} - {traceback.format_exc()}"
+            msg = f"{func.__name__} - {traceback.format_exc()}"
             logger.error(msg)
             raise
 

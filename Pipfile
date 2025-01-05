@@ -28,6 +28,7 @@ schwab-py = "==1.4.0"
 pip = "*"
 pyjwt = "*"
 motor = "<4.0,>=3.0"
+pandas-market-calendars = "*"
 
 [requires]
 python_version = "3.8"
