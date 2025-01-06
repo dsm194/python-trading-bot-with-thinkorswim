@@ -131,7 +131,12 @@ class OrderBuilderWrapper:
         return strategy
 
     def _construct_exit_strategy(self, strategy_object):
-        # import json
+        """
+        Constructs and returns the appropriate exit strategy instance based on the
+        'ExitStrategy' field in strategy_object. Defaults to 'FixedPercentageExit'
+        if the provided type is unrecognized.
+        """
+
         # Default to 'FixedPercentageExit' if 'ExitStrategy' is not provided
         strategy_type = strategy_object.get('ExitStrategy', 'FixedPercentageExit')
 
@@ -143,20 +148,24 @@ class OrderBuilderWrapper:
             try:
                 settings = json.loads(settings)
             except json.JSONDecodeError:
-                # If the string cannot be parsed into a dictionary, reset to an empty dictionary
+                # If the string cannot be parsed, reset to an empty dictionary
                 settings = {}
 
-        # Retrieve the sub-settings for the strategy_type
-        strategy_specific_settings = settings.get(strategy_type)
+        recognized_strategies = ('FixedPercentageExit', 'TrailingStopExit')
+        # If the strategy_type is not recognized, default to 'FixedPercentageExit'
+        if strategy_type not in recognized_strategies:
+            strategy_type = 'FixedPercentageExit'
 
+        # Retrieve settings for the chosen strategy_type (potentially updated above)
+        strategy_specific_settings = settings.get(strategy_type)
         # If no specific settings found, load default settings
         if strategy_specific_settings is None:
             strategy_specific_settings = self.load_default_settings(strategy_type)
-        
-        # Update settings with the strategy-specific settings
+
+        # Update the settings dictionary
         settings[strategy_type] = strategy_specific_settings
 
-        # Instantiate the correct exit strategy based on the strategy_type
+        # Instantiate the correct exit strategy based on the (possibly updated) strategy_type
         if strategy_type == 'FixedPercentageExit':
             return fixed_percentage_exit.FixedPercentageExitStrategy(settings[strategy_type])
         elif strategy_type == 'TrailingStopExit':
