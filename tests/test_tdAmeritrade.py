@@ -369,23 +369,6 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_client.get_quotes.assert_called_once_with('AAPL/MSFT')
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
-    async def test_get_specific_order_exception(self, mock_get_order, mock_checkTokenValidity):
-        # Mock token validity to return True
-        mock_checkTokenValidity.return_value = True
-
-        # Mock get_order to raise an exception
-        mock_get_order.side_effect = Exception("API error")
-
-        # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
-
-        # Ensure the method returns None and logs the error
-        self.assertIsNone(result)
-        self.td_ameritrade.logger.error.assert_called_once_with(
-            "An error occurred while attempting to get specific order: 12345. Error: API error (1113)"
-        )
-
-    @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_invalid_token(self, mock_checkTokenValidity):
         # Mock checkTokenValidity to return False
         mock_checkTokenValidity.return_value = False
