@@ -368,6 +368,22 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_checkTokenValidity.assert_called_once()
         mock_client.get_quotes.assert_called_once_with('AAPL/MSFT')
 
+    @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
+    async def test_get_specific_order_exception(self, mock_get_order, mock_checkTokenValidity):
+        # Mock token validity to return True
+        mock_checkTokenValidity.return_value = True
+
+        # Mock get_order to raise an exception
+        mock_get_order.side_effect = Exception("API error")
+
+        # Call the method
+        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+
+        # Ensure the method returns None and logs the error
+        self.assertIsNone(result)
+        self.td_ameritrade.logger.error.assert_called_once_with(
+            "An error occurred while attempting to get specific order: 12345. Error: API error (1113)"
+        )
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_invalid_token(self, mock_checkTokenValidity):
@@ -379,28 +395,6 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Ensure that the method returns None when the token is invalid
         self.assertIsNone(result)
-
-
-    @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
-    async def test_get_specific_order_account_numbers_error(self, mock_checkTokenValidity):
-        # Mock token validity to be True
-        mock_checkTokenValidity.return_value = True
-
-        # Mock the response for get_account_numbers to simulate an error
-        mock_account_response = AsyncMock()
-        mock_account_response.status_code = 500  # Simulating a server error
-        mock_client = AsyncMock()
-        mock_client.get_account_numbers.return_value = mock_account_response
-        self.td_ameritrade.async_client = mock_client
-
-        order_id = '12345'
-
-        # Call the method
-        order = await self.td_ameritrade.getSpecificOrderAsync(order_id)
-
-        # Assert that the method returns None since the account numbers request failed
-        self.assertIsNone(order)  # Since the else block returns None
-
     
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_success(self, mock_checkTokenValidity):
@@ -476,7 +470,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
 
         # Ensure that the method logs the error and returns None
-        self.td_ameritrade.logger.warning.assert_called_once_with("Failed to get specific order: 12345. HTTP Status: 404")
+        self.td_ameritrade.logger.warning.assert_called_once_with(f"Failed to get specific order: 12345. HTTP Status: 404 ({modifiedAccountID(self.account_id)})")
         self.assertEqual(result, {"error": "Order not found"})
 
 
@@ -485,25 +479,25 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Mock checkTokenValidity to return True
         mock_checkTokenValidity.return_value = True
 
-        # Mock the response from get_account_numbers
-        mock_client = AsyncMock()
-        mock_resp_account = MagicMock()
-        mock_resp_account.status_code = 200
-        mock_resp_account.json.return_value = [{"accountNumber": "123456789", "hashValue": "123ABCXYZ"}]
-        mock_client.get_account_numbers.return_value = mock_resp_account
+        # Mock the async_client's get_order method to raise an exception
+        mock_async_client = AsyncMock()
+        mock_async_client.get_order.side_effect = Exception("API error")
+        mock_account_response = MagicMock()
+        mock_account_response.status_code = 200
+        mock_account_response.json.return_value = [{"accountNumber": "123456789", "hashValue": "123ABCXYZ"}]
+        mock_async_client.get_account_numbers.return_value = mock_account_response
 
-        # Mock the client to raise an exception during get_order
-        mock_client.get_order.side_effect = Exception("API error")
+        # Assign the mock client to the TDAmeritrade instance
+        self.td_ameritrade.async_client = mock_async_client
 
-        # Set the mock client to the TDAmeritrade instance
-        self.td_ameritrade.async_client = mock_client
-
-        # Call the method and mock the response for the exception case
+        # Call the method
         result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
 
         # Ensure that the method logs the exception and returns None
-        self.td_ameritrade.logger.error.assert_called_once_with(f"An error occurred while attempting to get specific order: 12345. Error: API error ({modifiedAccountID(self.account_id)})")
         self.assertIsNone(result)
+        self.logger_mock.error.assert_called_once_with(
+            f"An error occurred while attempting to get specific order: 12345. Error: API error ({modifiedAccountID(self.account_id)})"
+        )
 
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
@@ -541,34 +535,77 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Ensure that the method returns the correct result
         self.assertEqual(result, {"Order_ID": 12345})
 
-
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
-    async def test_get_specific_order_handles_404(self, mock_checkTokenValidity):
+    async def test_get_specific_order_rejected_or_canceled(self, mock_checkTokenValidity):
+        # Mock token validity to be True
         mock_checkTokenValidity.return_value = True
 
-        # Mock the get_account_numbers method to return a response with a 404 status code
-        mock_response = MagicMock()
-        mock_response.status_code = 404  # Simulating a 404 response
-
-        # Create a mock client with necessary methods
-        mock_client = AsyncMock()    
-        mock_client.get_account_numbers.return_value = mock_response
+        mock_client = AsyncMock()
         
-        # Set the mock client as the client attribute
+        mock_resp_account = MagicMock()
+        mock_resp_account.status_code = 200
+        mock_resp_account.json.return_value = [{"accountNumber": "123456789", "hashValue": "123ABCXYZ"}]
+        mock_client.get_account_numbers.return_value = mock_resp_account
+
+        mock_order_response = AsyncMock()
+        mock_order_response.status_code = 200
+        # Mock get_order to simulate REJECTED status
+        mock_order_response.json = MagicMock(
+            return_value={
+                'Order_ID': 12345,
+                'status': 'REJECTED',
+                'symbol': 'AAPL',
+                'quantity': 10
+            }
+        )
+        mock_client.get_order.return_value = mock_order_response
+        # Set the mock client to the TDAmeritrade instance
         self.td_ameritrade.async_client = mock_client
 
-        # Create a dummy queue_order
-        queue_order = {"Order_ID": "invalid_order_id"}
+        # Call the method
+        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
 
-        # Call the method that uses getSpecificOrder
-        spec_order = await self.td_ameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
+        # Assert correct status handling
+        self.assertEqual(result, {
+                'Order_ID': 12345,
+                'status': 'REJECTED',
+                'symbol': 'AAPL',
+                'quantity': 10
+            })
 
-        # Handle the response as expected in the code
-        orderMessage = "Order not found or API is down." if spec_order is None else spec_order.get('message', '')
+    @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
+    async def test_get_specific_order_returns_none(self, mock_checkTokenValidity):
+        # Mock token validity to be True
+        mock_checkTokenValidity.return_value = True
 
-        # Assert the correct message is set for the 404 case
-        self.assertEqual(orderMessage, "Order not found or API is down.")
+        # Create a mock client
+        mock_client = AsyncMock()
 
+        # Mock the response for get_account_numbers
+        mock_resp_account = MagicMock()
+        mock_resp_account.status_code = 200
+        mock_resp_account.json.return_value = [{"accountNumber": "123456789", "hashValue": "123ABCXYZ"}]
+        mock_client.get_account_numbers.return_value = mock_resp_account
+
+        # Mock get_order to simulate a non-existent order (404 response)
+        mock_order_response = MagicMock()
+        mock_order_response.status_code = 404
+        mock_order_response.json.return_value=None  # Simulate API returning no data
+        mock_client.get_order.return_value = mock_order_response
+
+        # Assign the mock client to the TDAmeritrade instance
+        self.td_ameritrade.async_client = mock_client
+
+        # Call the method
+        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+
+        # Assert that the method returns None for a non-existent order
+        self.assertIsNone(result)
+
+        # Ensure the logger warning is called with the correct message
+        self.logger_mock.warning.assert_called_once_with(
+            f"Failed to get specific order: 12345. HTTP Status: 404 ({modifiedAccountID(self.account_id)})"
+        )
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_cancel_order_success(self, mock_checkTokenValidity):

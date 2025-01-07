@@ -588,7 +588,7 @@ class TDAmeritrade:
                     response = await self.async_client.get_order(id, account_hash)
 
                     if response.status_code != 200:
-                        self.logger.warning(f"Failed to get specific order: {id}. HTTP Status: {response.status_code}")
+                        self.logger.warning(f"Failed to get specific order: {id}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
                         # return None
 
                     return self.rename_order_ids(response.json())
