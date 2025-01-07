@@ -141,27 +141,29 @@ class QuoteManager:
             if self.is_streaming:
                 return  # Already streaming, no action needed
 
-            self.is_streaming = True
+            self.is_streaming = True  # Set state to streaming to prevent race
 
-            try:
-                async with self.lock:
-                    # Update subscribed symbols with the new structure
-                    self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
+        try:
+            async with self.lock:
+                # Update subscribed symbols with the new structure
+                self.subscribed_symbols.update(entry["symbol"] for entry in symbols)
 
-                # Pass stream_initialized to TdAmeritrade.start_stream and run as a background task
-                self.stream_task = asyncio.create_task(
-                    self.tdameritrade.start_stream(
-                        symbols,
-                        quote_handler=self.quote_handler,
-                        max_retries=5,
-                        stop_event=self.stop_event,
-                        initialized_event=self.stream_initialized  # Pass the event here
-                    )
+            # Pass stream_initialized to TdAmeritrade.start_stream and run as a background task
+            self.stream_task = asyncio.create_task(
+                self.tdameritrade.start_stream(
+                    symbols,
+                    quote_handler=self.quote_handler,
+                    max_retries=5,
+                    stop_event=self.stop_event,
+                    initialized_event=self.stream_initialized  # Pass the event here
                 )
-            except Exception as e:
-                self.logger.error(f"Failed to start stream: {e}")
-                self.is_streaming = False  # Reset state on failure
-                raise
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to start stream: {e}")
+            # Reset state on failure (note that `is_streaming` is already protected by the lock)
+            self.is_streaming = False
+            raise
+
 
 
 
@@ -182,25 +184,42 @@ class QuoteManager:
                     self.subscribed_symbols.difference_update(s["symbol"] for s in new_symbols)
                     raise
 
-    async def add_quotes(self, symbols):
+    async def add_quotes(self, symbols, batch_size=10):
         async with self.lock:
             # Extract symbols and filter out already subscribed ones
             new_symbols = [s for s in symbols if s["symbol"] not in self.subscribed_symbols]
 
         if new_symbols:
-            if self.is_streaming:
+            # First batch (either start the stream or update the subscription)
+            first_batch = new_symbols[:batch_size]
+            if not self.is_streaming:
                 try:
-                    # Pass the new structure to the update function
-                    await self._update_stream_subscription(new_symbols)
-                except Exception as e:
-                    self.logger.error(f"Failed to update subscription: {e}")
-            else:
-                try:
-                    # Pass the new structure to start the stream
-                    await self._start_quotes_stream(new_symbols)
+                    # Start the stream with the first batch
+                    await self._start_quotes_stream(first_batch)
                 except Exception as e:
                     self.logger.error(f"Failed to start stream for new quotes: {e}")
                     raise
+            else:
+                try:
+                    # If the stream is already running, just update the subscription
+                    await self._update_stream_subscription(first_batch)
+                    self.logger.info(f"Updated stream subscription with first batch of {len(first_batch)} symbols.")
+                except Exception as e:
+                    self.logger.error(f"Failed to update subscription with first batch: {e}")
+
+            # Subsequent batches (always update the subscription)
+            for i in range(batch_size, len(new_symbols), batch_size):
+                batch = new_symbols[i:i + batch_size]
+                if self.is_streaming:
+                    try:
+                        # Update the subscription with the new batch
+                        await self._update_stream_subscription(batch)
+                        self.logger.info(f"Updated stream subscription with batch of {len(batch)} symbols.")
+                    except Exception as e:
+                        self.logger.error(f"Failed to update subscription with batch: {e}")
+                else:
+                    self.logger.warning("Stream is not active, skipping update.")
+
 
     async def add_callback(self, callback):
         """Add a new callback."""
