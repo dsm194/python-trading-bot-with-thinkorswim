@@ -1310,10 +1310,15 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         ]
 
         # Mock open_positions.find to mimic AsyncIOMotorCursor
-        mock_open_positions_cursor = AsyncMock()
-        # mock_open_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
-        mock_open_positions_cursor.to_list = AsyncMock(return_value=mock_open_positions)  # Mock `to_list`
-        api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        # mock_open_positions_cursor = AsyncMock()
+        # # mock_open_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
+        # mock_open_positions_cursor.to_list = AsyncMock(return_value=mock_open_positions)  # Mock `to_list`
+        # api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+
+        # Mock cursor to simulate async iteration
+        mock_cursor = AsyncMock()
+        mock_cursor.__aiter__.return_value = iter(mock_open_positions)  # Mock async iteration
+        api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_cursor)
 
         # Mock getSpecificOrder for different orders
         api_trader.tdameritrade.getSpecificOrderAsync = AsyncMock(

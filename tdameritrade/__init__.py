@@ -327,7 +327,7 @@ class TDAmeritrade:
             return None
 
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, message_rate_limit=10):
         retries = 0
         self.logger.info(f"Starting stream for symbols: {symbols} ({modifiedAccountID(self.account_id)})")
 
@@ -344,7 +344,8 @@ class TDAmeritrade:
             return True
 
         async def stream_messages():
-            """Stream messages continuously."""
+            """Stream messages continuously with rate limiting."""
+            last_received_time = time.time()
             while not (stop_event and stop_event.is_set()):
                 try:
                     # Wrap handle_message in a task
@@ -370,6 +371,12 @@ class TDAmeritrade:
                     for task in done:
                         if task is message_task and task.exception():
                             raise task.exception()
+
+                    # Throttle message handling by waiting for the defined rate limit
+                    time_elapsed = time.time() - last_received_time
+                    if time_elapsed < message_rate_limit:
+                        await asyncio.sleep(message_rate_limit - time_elapsed)  # Wait for the next slot
+                    last_received_time = time.time()
 
                 except asyncio.TimeoutError:
                     self.logger.warning("Timeout waiting for messages.")
@@ -397,7 +404,7 @@ class TDAmeritrade:
                 if initialized_event and not initialized_event.is_set():
                     initialized_event.set()
 
-                # Step 3: Stream messages in the background
+                # Step 3: Stream messages in the background with rate limiting
                 await stream_messages()
 
             except websockets.ConnectionClosedError as e:

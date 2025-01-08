@@ -39,7 +39,9 @@ class AsyncMongoDB:
 
             if MONGO_URI is not None:
                 self.client = AsyncIOMotorClient(
-                    MONGO_URI, authSource="admin", tlsCAFile=ca
+                    MONGO_URI, authSource="admin",
+                    tlsCAFile=ca,
+                    compressors=["zstd"]  # Specify compression type (e.g., "snappy")
                 )
 
                 # Test the connection asynchronously

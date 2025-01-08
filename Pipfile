@@ -29,6 +29,7 @@ pip = "*"
 pyjwt = "*"
 motor = "<4.0,>=3.0"
 pandas-market-calendars = "*"
+zstandard = "*"
 
 [requires]
 python_version = "3.8"
