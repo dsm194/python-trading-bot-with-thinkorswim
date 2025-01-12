@@ -290,7 +290,7 @@ class TDAmeritrade:
         return float(buying_power)
 
     @exception_handler
-    async def getQuoteAsync(self, symbol):
+    async def getQuoteAsync(self, symbol, fields=schwabBaseClient.Quote.Fields.QUOTE):
         """
         Retrieves the most recent quote for a stock asynchronously.
 
@@ -309,9 +309,9 @@ class TDAmeritrade:
         if isValid:
             try:
                 if "/" in symbol:
-                    response = await self.async_client.get_quotes(symbol)
+                    response = await self.async_client.get_quotes(symbol, fields=fields)
                 else:
-                    response = await self.async_client.get_quote(symbol)
+                    response = await self.async_client.get_quote(symbol, fields=fields)
 
                 if response.status_code != 200:
                     self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")

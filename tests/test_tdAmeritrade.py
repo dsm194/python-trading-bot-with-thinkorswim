@@ -5,6 +5,7 @@ from datetime import datetime
 import httpx
 from assets.helper_functions import modifiedAccountID
 from tdameritrade import TDAmeritrade  # Replace with actual module
+from schwab.client.base import BaseClient as schwabBaseClient
 
 class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
@@ -166,13 +167,16 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Set the mock client directly on the TDAmeritrade instance
         self.td_ameritrade.async_client = mock_client
 
-        # Call the method under test
+        # Call the method under test without passing the 'fields' parameter
         result = await self.td_ameritrade.getQuoteAsync("INVALID_SYMBOL")
 
         # Assertions
         self.logger_mock.error.assert_called_once()
         self.assertIsNone(result, "Expected None for non-existent symbol")
-        mock_client.get_quote.assert_called_once_with("INVALID_SYMBOL")
+        
+        # Expect the 'get_quote' method to be called with the symbol and the default 'fields' value
+        mock_client.get_quote.assert_called_once_with("INVALID_SYMBOL", fields=schwabBaseClient.Quote.Fields.QUOTE)  # Adjusted to expect 'fields'
+
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_getAccount_successful(self, mock_checkTokenValidity):
@@ -258,7 +262,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Assert the expected result
         self.assertEqual(result, {'symbol': 'AAPL', 'price': 150})
         mock_checkTokenValidity.assert_called_once()
-        mock_client.get_quote.assert_called_once_with('AAPL')
+        mock_client.get_quote.assert_called_once_with('AAPL', fields=schwabBaseClient.Quote.Fields.QUOTE)
     
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
@@ -304,7 +308,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.logger_mock.error.assert_called_once_with(f"Failed to retrieve quote for symbol: AAPL. HTTP Status: 404 ({modifiedAccountID(self.account_id)})")
 
         mock_checkTokenValidity.assert_called_once()
-        mock_client.get_quote.assert_called_once_with('AAPL')
+        mock_client.get_quote.assert_called_once_with('AAPL', fields=schwabBaseClient.Quote.Fields.QUOTE)
 
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
@@ -366,7 +370,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Assert the expected result
         self.assertEqual(result, {'AAPL/MSFT': {'symbol': 'AAPL/MSFT', 'price': 200}})
         mock_checkTokenValidity.assert_called_once()
-        mock_client.get_quotes.assert_called_once_with('AAPL/MSFT')
+        mock_client.get_quotes.assert_called_once_with('AAPL/MSFT', fields=schwabBaseClient.Quote.Fields.QUOTE)
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_invalid_token(self, mock_checkTokenValidity):

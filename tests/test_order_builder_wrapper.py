@@ -41,44 +41,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             self.assertIsInstance(strategy, fixed_percentage_exit.FixedPercentageExitStrategy)
             self.assertEqual(strategy.strategy_settings, mock_settings['FixedPercentageExit'])
 
-    def test_get_open_positions(self):
-        asyncio.run(self.async_test_get_open_positions())
-
-    @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    async def async_test_get_open_positions(self, mock_init):
-        # Create an instance of ApiTrader
-        self.api_trader = ApiTrader()
-
-        # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
-        self.api_trader.user = {"Name": "TestUser"}
-        self.api_trader.account_id = "test_account"
-
-        mock_open_positions = [
-            {"Symbol": "AAPL", "Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"},
-            {"Symbol": "GOOG", "Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"},
-            {"Symbol": "TSLA", "Trader": "OtherUser", "Account_ID": "other_account", "Strategy": "Strategy_B"}
-        ]
-
-        # Mock open_positions.find to mimic AsyncIOMotorCursor
-        mock_open_positions_cursor = AsyncMock()
-        mock_open_positions_cursor.to_list = AsyncMock(return_value=[
-            position for position in mock_open_positions if position["Trader"] == "TestUser" and position["Account_ID"] == "test_account"
-        ])  # Mock `to_list`
-        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
-
-        # Call the get_open_positions method
-        result = await self.api_trader.get_open_positions(self.api_trader.user, self.api_trader.account_id, "Strategy_A")
-
-        # Assertions
-        self.api_trader.async_mongo.open_positions.find.assert_called_once_with(
-            {"Trader": "TestUser", "Account_ID": "test_account", "Strategy": "Strategy_A"}
-        )
-        self.assertEqual(len(result), 2)  # Only positions for "TestUser" and "test_account" should be returned
-        self.assertIn("AAPL", [pos["Symbol"] for pos in result])
-        self.assertIn("GOOG", [pos["Symbol"] for pos in result])
-        self.assertNotIn("TSLA", [pos["Symbol"] for pos in result])
-
     def test_get_current_strategy_allocation(self):
         asyncio.run(self.async_test_get_current_strategy_allocation())
 
@@ -88,33 +50,31 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock the open positions returned by get_open_positions
         mock_open_positions = [
             {"Symbol": "AAPL", "Strategy": "Strategy_A", "Qty": 10, "Entry_Price": 150.00},
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 5, "Entry_Price": 1000.00},
-            {"Symbol": "TSLA", "Strategy": "Strategy_B", "Qty": 8, "Entry_Price": 700.00},
         ]
-
-        # Mock the queued positions returned by get_queued_positions
+        
         mock_queued_positions = [
             {"Symbol": "MSFT", "Strategy": "Strategy_A", "Qty": 2, "Entry_Price": 200.00},
         ]
 
-        # Ensure get_open_positions returns only the open positions for Strategy_A
-        self.api_trader.get_open_positions.return_value = [
-            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
-        ]
+        # Create an AsyncMock for the cursor
+        mock_open_positions_cursor = AsyncMock()
+        mock_queued_positions_cursor = AsyncMock()
 
-        # Ensure get_queued_positions returns only the queued positions for Strategy_A
-        self.api_trader.get_queued_positions.return_value = [
-            position for position in mock_queued_positions if position["Strategy"] == "Strategy_A"
-        ]
+        # Mock the async iteration behavior
+        mock_open_positions_cursor.__aiter__.return_value = iter(mock_open_positions)  # directly mock __aiter__
+        mock_queued_positions_cursor.__aiter__.return_value = iter(mock_queued_positions)  # mock __aiter__
+
+        # Ensure that find() returns the mocked cursors
+        self.api_trader.async_mongo.open_positions.find.return_value = mock_open_positions_cursor
+        self.api_trader.async_mongo.queue.find.return_value = mock_queued_positions_cursor
 
         # Call the method under test
         strategy = "Strategy_A"
@@ -125,8 +85,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         expected_allocation = 6900.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
         self.assertEqual(result, expected_allocation)
 
     def test_get_current_strategy_allocation_no_positions(self):
@@ -138,15 +96,22 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()  # Change to MagicMock
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
-        # Simulate no open or queued positions for the strategy
-        self.api_trader.get_open_positions.return_value = []
-        self.api_trader.get_queued_positions.return_value = []
+        # Create a MagicMock cursor object
+        mock_open_positions_cursor = MagicMock()
+        mock_queued_positions_cursor = MagicMock()
+
+        # Mock the async iteration behavior for empty results
+        # Mock __aiter__ and __anext__ for the async iteration
+        mock_open_positions_cursor.__aiter__.return_value = iter([])  # Empty list for open positions
+        mock_queued_positions_cursor.__aiter__.return_value = iter([])  # Empty list for queued positions
+
+        # Mock MongoDB find calls to return the mocked cursors
+        self.api_trader.async_mongo.open_positions.find.return_value = mock_open_positions_cursor
+        self.api_trader.async_mongo.queue.find.return_value = mock_queued_positions_cursor
 
         # Call the method under test
         strategy = "Strategy_A"
@@ -156,8 +121,15 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.assertEqual(result, 0.0)
 
         # Verify that the async methods are awaited
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
+        self.api_trader.async_mongo.open_positions.find.assert_called_once_with(
+            {"Trader": self.api_trader.user["Name"], "Account_ID": self.api_trader.account_id, "Strategy": strategy},
+            {"_id": 0, "Qty": 1, "Entry_Price": 1, "Asset_Type": 1}
+        )
+
+        self.api_trader.async_mongo.queue.find.assert_called_once_with(
+            {"Trader": self.api_trader.user["Name"], "Account_ID": self.api_trader.account_id, "Strategy": strategy, "Order_Status": {"$in": ["PENDING_ACTIVATION", "QUEUED"]}, "Direction": "OPEN POSITION"},
+            {"_id": 0, "Qty": 1, "Entry_Price": 1, "Asset_Type": 1}
+        )
 
     def test_get_current_strategy_allocation_with_outstanding_orders(self):
         asyncio.run(self.async_test_get_current_strategy_allocation_with_outstanding_orders())
@@ -168,11 +140,9 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock the open positions returned by get_open_positions
         mock_open_positions = [
@@ -187,14 +157,21 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 3, "Entry_Price": 995.00, "Order_Status": "QUEUED"},
         ]
 
-        # Ensure get_open_positions returns only the open positions for Strategy_A
-        self.api_trader.get_open_positions.return_value = [
-            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
-        ]
-        # Ensure get_queued_positions returns only the queued orders for Strategy_A
-        self.api_trader.get_queued_positions.return_value = [
-            order for order in mock_queued_orders if order["Strategy"] == "Strategy_A"
-        ]
+        # Create a mock for the open positions cursor (async iterable)
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.__aiter__.return_value = iter(
+            [position for position in mock_open_positions if position["Strategy"] == "Strategy_A"]
+        )
+
+        # Create a mock for the queued orders cursor (async iterable)
+        mock_queued_positions_cursor = MagicMock()
+        mock_queued_positions_cursor.__aiter__.return_value = iter(
+            [order for order in mock_queued_orders if order["Strategy"] == "Strategy_A"]
+        )
+
+        # Mock the behavior of async_mongo to return the mocked cursors
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queued_positions_cursor)
 
         # Call the method under test
         strategy = "Strategy_A"
@@ -207,9 +184,8 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         expected_allocation = 10210.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
         self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
+
 
     def test_get_current_strategy_allocation_zero_qty_or_price(self):
         asyncio.run(self.async_test_get_current_strategy_allocation_zero_qty_or_price())
@@ -220,11 +196,9 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
         # Mock positions with zero quantities or entry prices
         mock_open_positions = [
@@ -234,12 +208,18 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         ]
 
         # Mock the async behavior of get_open_positions
-        self.api_trader.get_open_positions.return_value = [
-            position for position in mock_open_positions if position["Strategy"] == "Strategy_A"
-        ]
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.__aiter__.return_value = iter(
+            [position for position in mock_open_positions if position["Strategy"] == "Strategy_A"]
+        )
 
-        # Mock the queued positions (return empty as we're not testing queued positions here)
-        self.api_trader.get_queued_positions.return_value = []
+        # Mock the async behavior of get_queued_positions returning empty
+        mock_queued_positions_cursor = MagicMock()
+        mock_queued_positions_cursor.__aiter__.return_value = iter([])  # Empty list for queued positions
+
+        # Mock the behavior of async_mongo to return the mocked cursors
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queued_positions_cursor)
 
         # Call the method under test
         strategy = "Strategy_A"
@@ -249,8 +229,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         expected_allocation = 1000.00
 
         # Assertions
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, strategy)
         self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
 
     def test_option_allocation(self):
@@ -262,30 +240,42 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
         # Test strategy allocation calculation for options
         mock_open_positions = [{"Qty": 2, "Entry_Price": 3.0, "Asset_Type": "OPTION"}]
         mock_queued_positions = [{"Qty": 1, "Entry_Price": 4.0, "Asset_Type": "OPTION"}]
 
-        # Ensure get_open_positions and get_queued_positions return mock data
-        self.api_trader.get_open_positions.return_value = mock_open_positions
-        self.api_trader.get_queued_positions.return_value = mock_queued_positions
+        # Create a mock for the open positions cursor (async iterable)
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.__aiter__.return_value = iter(
+            [position for position in mock_open_positions if position["Asset_Type"] == "OPTION"]
+        )
+
+        # Create a mock for the queued orders cursor (async iterable)
+        mock_queued_positions_cursor = MagicMock()
+        mock_queued_positions_cursor.__aiter__.return_value = iter(
+            [order for order in mock_queued_positions if order["Asset_Type"] == "OPTION"]
+        )
+
+        # Mock the behavior of async_mongo to return the mocked cursors
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queued_positions_cursor)
 
         # Call the method under test
-        allocation = await self.api_trader.get_current_strategy_allocation("TestStrategy", self.api_trader.user, self.api_trader.account_id)
+        strategy = "TestStrategy"
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
-        # Expected allocation: (2 * 3 * 100) + (1 * 4 * 100) = 600 + 400 = 1000
+        # Expected result:
+        # From open positions: (2 * 3 * 100) = 600
+        # From outstanding orders: (1 * 4 * 100) = 400
+        # Total: 600 + 400 = 1000
         expected_allocation = 1000
 
         # Assertions
-        self.assertEqual(allocation, expected_allocation)
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
+        self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
 
     def test_mixed_allocation(self):
         asyncio.run(self.async_test_mixed_allocation())
@@ -296,11 +286,9 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.api_trader = ApiTrader()
 
         # Mock attributes
-        self.api_trader.async_mongo = AsyncMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.user = {"Name": "TestUser"}
         self.api_trader.account_id = "test_account"
-        self.api_trader.get_open_positions = AsyncMock()
-        self.api_trader.get_queued_positions = AsyncMock()
 
         # Test strategy allocation calculation for a mix of equities and options
         mock_open_positions = [
@@ -312,24 +300,34 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Qty": 1, "Entry_Price": 4.0, "Asset_Type": "OPTION"}
         ]
 
-        # Ensure get_open_positions and get_queued_positions return mock data
-        self.api_trader.get_open_positions.return_value = mock_open_positions
-        self.api_trader.get_queued_positions.return_value = mock_queued_positions
+        # Create a mock for the open positions cursor (async iterable)
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.__aiter__.return_value = iter(
+            [position for position in mock_open_positions if position["Asset_Type"] in ["EQUITY", "OPTION"]]
+        )
+
+        # Create a mock for the queued orders cursor (async iterable)
+        mock_queued_positions_cursor = MagicMock()
+        mock_queued_positions_cursor.__aiter__.return_value = iter(
+            [order for order in mock_queued_positions if order["Asset_Type"] in ["EQUITY", "OPTION"]]
+        )
+
+        # Mock the behavior of async_mongo to return the mocked cursors
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queued_positions_cursor)
 
         # Call the method under test
-        allocation = await self.api_trader.get_current_strategy_allocation("TestStrategy", self.api_trader.user, self.api_trader.account_id)
+        strategy = "TestStrategy"
+        result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
-        # Expected allocation:
+        # Expected result:
         # Equities: (10 * 50) + (5 * 45) = 725
         # Options: (2 * 3 * 100) + (1 * 4 * 100) = 600 + 400 = 1000
         # Total: 725 + 1000 = 1725
         expected_allocation = 1725
 
         # Assertions
-        self.assertEqual(allocation, expected_allocation)
-        self.api_trader.get_open_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
-        self.api_trader.get_queued_positions.assert_awaited_once_with(self.api_trader.user, self.api_trader.account_id, "TestStrategy")
-
+        self.assertEqual(result, expected_allocation)  # Ensure allocation is correct
 
     def test_standard_order_open_position(self):
         asyncio.run(self.async_test_standard_order_open_position())

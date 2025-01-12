@@ -1787,8 +1787,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     @patch('api_trader.ApiTrader.sendOrder', new_callable=AsyncMock)  # Mock the order sending as async
     async def test_multiple_strategies_with_price_movement(self, mock_send_order):
         # Step 1: Initialize ApiTrader and strategies
-        self.api_trader.get_open_positions = MagicMock()
-        self.api_trader.get_queued_positions = MagicMock()
 
         # Setup the strategies
         take_profit_strategy = FixedPercentageExitStrategy({
@@ -1821,7 +1819,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                 "exited": False  # Track if this position has exited
             }
         ]
-        self.api_trader.get_open_positions.return_value = mock_open_positions
 
         # Step 2: Define realistic price movements including a gap down scenario
         price_movements = [145, 155, 152, 158, 140, 145, 135, 150, 149, 130, 130, 105]

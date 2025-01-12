@@ -1,4 +1,5 @@
 # imports
+import asyncio
 from api_trader.strategies import fixed_percentage_exit
 from api_trader.strategies import atr_exit
 from api_trader.strategies import trailing_stop_exit
@@ -40,74 +41,50 @@ class OrderBuilderWrapper:
 
         super().__init__()
 
-
-    async def get_open_positions(self, user, account_id, strategy):
-        """
-        Fetch open positions from the database for the given user, account ID, and strategy.
-        """
-        if self.async_mongo:
-            open_positions = await self.async_mongo.open_positions.find({
-                 "Trader": user["Name"],
-                "Account_ID": account_id,
-                "Strategy": strategy
-            }).to_list(None)  # Convert cursor to a list
-            return open_positions
-        else:
-            raise ValueError("MongoDB reference is not provided.")
-    
-
-    async def get_queued_positions(self, user, account_id, strategy):
-        """
-        Fetch queued positions from the database for the given user, account ID, and strategy.
-        """
-        if self.async_mongo:
-            queued_positions = await self.async_mongo.queue.find({
-                "Trader": user["Name"],
-                "Account_ID": account_id,
-                "Strategy": strategy,
-                "Order_Status": { "$in": ["PENDING_ACTIVATION", "QUEUED"] },
-                "Direction": "OPEN POSITION"
-            }).to_list(None)
-            return queued_positions
-        else:
-            raise ValueError("MongoDB reference is not provided.")
-        
-
     async def get_current_strategy_allocation(self, strategy, user, account_id):
         """
         Fetch the current allocation for a given strategy. If open_positions are not provided,
         use the internal mongo reference to fetch them.
-
-        Args:
-            strategy (str): The strategy name.
-            user (str): The user identifier.
-            account_id (str): The account identifier.
-
-        Returns:
-            float: The current allocation for the strategy.
         """
-        open_positions = await self.get_open_positions(user, account_id, strategy)
-        outstanding_orders = await self.get_queued_positions(user, account_id, strategy)
+        open_positions_cursor = self.async_mongo.open_positions.find(
+            {
+                "Trader": user["Name"],
+                "Account_ID": account_id,
+                "Strategy": strategy
+            },
+            {"_id": 0, "Qty": 1, "Entry_Price": 1, "Asset_Type": 1}
+        )
+        queued_positions_cursor = self.async_mongo.queue.find(
+            {
+                "Trader": user["Name"],
+                "Account_ID": account_id,
+                "Strategy": strategy,
+                "Order_Status": {"$in": ["PENDING_ACTIVATION", "QUEUED"]},
+                "Direction": "OPEN POSITION"
+            },
+            {"_id": 0, "Qty": 1, "Entry_Price": 1, "Asset_Type": 1}
+        )
 
-        def calculate_allocation(positions):
-            """Helper function to calculate allocation with an option multiplier."""
+        # Use async for to iterate over the cursors
+        async def calculate_allocation(cursor):
             allocation = 0
-            for position in positions:
+            async for position in cursor:
                 qty = position["Qty"]
                 entry_price = position["Entry_Price"]
-                asset_type = position.get("Asset_Type", "EQUITY")  # Default to equity if not specified
-
-                # Multiply by 100 if it's an option
-                if asset_type.upper() == AssetType.OPTION:
+                asset_type = position.get("Asset_Type", "EQUITY")
+                if asset_type.upper() == "OPTION":
                     allocation += qty * entry_price * 100
                 else:
                     allocation += qty * entry_price
             return allocation
 
-        # Calculate total allocation from open positions and outstanding orders
-        total_allocation = calculate_allocation(open_positions) + calculate_allocation(outstanding_orders)
+        # Calculate total allocation
+        total_allocation = await asyncio.gather(
+            calculate_allocation(open_positions_cursor),
+            calculate_allocation(queued_positions_cursor)
+        )
 
-        return total_allocation
+        return sum(total_allocation)
     
         
     def load_default_settings(self, strategy_type):
