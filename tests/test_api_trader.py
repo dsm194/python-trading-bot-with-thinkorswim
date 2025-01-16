@@ -56,10 +56,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             )
 
         self.queue_order = {
+            "_id": "111111",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
             "Direction": "OPEN POSITION",
-            "Account_ID": "123",
+            "Account_ID": self.account_id,
             "Asset_Type": "EQUITY",
             "Side": "BUY",
             "Position_Type": "LONG",
@@ -389,8 +390,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Setup dependencies
         user = MagicMock()
-        mongo = MagicMock()
-        async_mongo = AsyncMock()
+        async_mongo = MagicMock()
         push = MagicMock()
         logger = MagicMock()
         account_id = "test_account"
@@ -416,7 +416,27 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             side_effect=[{"status": "FILLED", "Order_ID": "12345"}]
         )
 
+        # Create a mock for the queue cursor (async iterable)
         mock_queue_cursor = AsyncMock()
+
+        # Mock async iteration (__aiter__) to simulate async cursor behavior
+        mock_queue_cursor.__aiter__.return_value = iter([
+            {
+                "Symbol": "AAPL",
+                "Order_ID": "12345",
+                "Order_Type": "STANDARD",
+                "Trader": "test_trader",
+                "Account_ID": "test_account",
+                "Direction": "OPEN POSITION",  # Ensure direction is correct
+                "Qty": 100,
+                "Entry_Price": 150,
+                "Strategy": "test_strategy",
+                "Asset_Type": "EQUITY",
+                "Side": "BUY"
+            }
+        ])
+
+        # Mock the to_list method correctly as an async method
         mock_queue_cursor.to_list = AsyncMock(return_value=[
             {
                 "Symbol": "AAPL",
@@ -432,10 +452,14 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                 "Side": "BUY"
             }
         ])
-        api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queue_cursor)
+
+        api_trader.async_mongo.queue.find.return_value = mock_queue_cursor
 
         # Call updateStatus
         await api_trader.updateStatus()
+
+        # Debugging: Check if pushOrder was called
+        print(f"pushOrder called {mock_pushOrder.call_count} times.")
 
         # Assert pushOrder was called once with the queued order and the specific order
         mock_pushOrder.assert_called_once_with(
@@ -457,6 +481,8 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Verify no warnings were logged
         api_trader.logger.warning.assert_not_called()
+
+
 
     @patch('api_trader.ApiTrader.pushOrder')  # Mock pushOrder
     async def test_update_status_order_not_found(self, mock_pushOrder):
@@ -534,9 +560,9 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "Reliable"  # Correctly expecting "Reliable" here for paper trading mode
         )
 
-        # Verify logger info was called
-        expected_log_message = f"Paper Trader - Sending queue order to PushOrder ({modifiedAccountID(account_id)})"
-        api_trader.logger.info.assert_any_call(expected_log_message)
+        # Verify logger warning was called instead, since the order wasn't found
+        expected_log_message_warning = "Order ID not found. Moving AAPL to positions."
+        api_trader.logger.warning.assert_any_call(expected_log_message_warning)
 
     @patch.object(ApiTrader, 'pushOrder', return_value=None)
     async def test_update_status_canceled_rejected(self, mock_pushOrder):
@@ -576,6 +602,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_queue_cursor = AsyncMock()
         mock_queue_cursor.to_list = AsyncMock(return_value=[
             {
+                "_id": "111111",
                 "Order_ID": "12345",
                 "Symbol": "SYM0",
                 "Order_Type": "OCO",
@@ -602,14 +629,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         await api_trader.updateStatus()
 
         # Verify queue removal
-        api_trader.async_mongo.queue.delete_one.assert_called_once_with(
-            {
-                "Trader": "TestUser",
-                "Symbol": "SYM0",
-                "Strategy": "STRATEGY_0",
-                "Account_ID": "12345"
-            }
-        )
+        api_trader.async_mongo.queue.delete_one.assert_called_once_with({"_id": "111111"})
 
         # Verify that "CANCELED" order was logged and inserted into the canceled collection
         expected_canceled_order = {
@@ -638,14 +658,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         await api_trader.updateStatus()
 
         # Verify queue removal for "REJECTED"
-        api_trader.async_mongo.queue.delete_one.assert_called_once_with(
-            {
-                "Trader": "TestUser",
-                "Symbol": "SYM0",
-                "Strategy": "STRATEGY_0",
-                "Account_ID": "12345"
-            }
-        )
+        api_trader.async_mongo.queue.delete_one.assert_called_once_with({"_id": "111111"})
 
         # Verify that "REJECTED" order was logged and inserted into the rejected collection
         expected_rejected_order = {
@@ -687,6 +700,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_queue_cursor = AsyncMock()
         mock_queue_cursor.to_list = AsyncMock(return_value=[
             {
+                "_id": "111111",
                 "Order_ID": "12345",
                 "Symbol": "SYM0",
                 "Order_Type": "OCO",
@@ -714,12 +728,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.async_mongo.rejected.insert_one.assert_not_called()
 
         # Verify that update_one was called with the correct arguments
-        expected_filter = {
-            "Trader": self.user["Name"],
-            "Symbol": "SYM0",
-            "Strategy": "STRATEGY_0",
-            "Account_ID": "12345",
-        }
+        expected_filter = {'_id': '111111'}
         expected_update = {"$set": {"Order_Status": "PENDING"}}
 
         api_trader.async_mongo.queue.update_one.assert_called_once_with(expected_filter, expected_update)
@@ -739,7 +748,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "Position_Type": "LONG",
             "Data_Integrity": "Reliable",
             "Trader": "TestUser",
-            "Account_ID": "123",
+            "Account_ID": self.account_id,
             "Asset_Type": "EQUITY",
             "Account_Position": "Live",
             "Order_Type": "LIMIT",
@@ -755,12 +764,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Entry_Date", called_args)
 
         # Verify other method calls
-        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({
-            "Trader": "TestUser",
-            "Symbol": "AAPL",
-            "Strategy": "TestStrategy",
-            "Account_ID": "123"
-        })
+        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({'_id': '111111'})
         # self.push.send.assert_called_once_with(
         #     ">>>> \n Side: BUY \n Symbol: AAPL \n Qty: 10 \n Price: $150.0 \n Strategy: TestStrategy \n Trader: TestUser"
         # )
@@ -768,10 +772,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     async def test_pushOrder_close_position(self):
         # Prepare the mock data
         self.queue_order = {
+            "_id": "111111",
             "Symbol": "AAPL",
             "Strategy": "TestStrategy",
             "Direction": "CLOSE POSITION",
-            "Account_ID": "123",
+            "Account_ID": self.account_id,
             "Asset_Type": "EQUITY",
             "Side": "SELL",
             "Position_Type": "LONG",
@@ -812,7 +817,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "Position_Type": "LONG",
             "Data_Integrity": "Reliable",
             "Trader": "TestUser",
-            "Account_ID": "123",
+            "Account_ID": self.account_id,
             "Asset_Type": "EQUITY",
             "Account_Position": "Live",
             "Order_Type": "LIMIT",
@@ -829,25 +834,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Exit_Date", called_args)
 
         # Verify that open_positions entry was removed
-        self.api_trader.async_mongo.open_positions.delete_one.assert_called_once_with({
-            "Trader": "TestUser",
-            "Account_ID": "123",
-            "Symbol": "AAPL",
-            "Strategy": "TestStrategy"
-        })
+        self.api_trader.async_mongo.open_positions.delete_one.assert_called_once_with({'_id': '111111'})
 
         # Verify the queue deletion
-        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({
-            "Trader": "TestUser",
-            "Symbol": "AAPL",
-            "Strategy": "TestStrategy",
-            "Account_ID": "123"
-        })
-
-        # Verify that push.send was called with the expected message
-        # self.push.send.assert_called_once_with(
-        #     "____ \n Side: SELL \n Symbol: AAPL \n Qty: 10 \n Entry Price: $150.0 \n Exit Price: $155.0 \n Trader: TestUser"
-        # )
+        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({'_id': '111111'})
 
     async def test_pushOrder_mongo_exception(self):
         """Test that pushOrder handles MongoDB exceptions."""
@@ -868,8 +858,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             # Define expected substrings
             expected_substrings = [
                 "Traceback (most recent call last):",
-                "Failed to insert AAPL into MongoDB. Retrying... - WriteConcernError",
-                "Retry failed for AAPL. Error: WriteConcernError",
+                "Insert failed for AAPL: WriteConcernError",
+                "Retry 1 failed for AAPL: WriteConcernError",
+                "Retry 2 failed for AAPL: WriteConcernError",
+                "Retry 3 failed for AAPL: WriteConcernError",  # Retry logic should log 3 attempts
             ]
 
             # Check if expected substrings are in the log messages
@@ -878,37 +870,37 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                                 f"Expected log message containing '{expected_substring}' not found.")
 
         # Check that the delete_one method was called even after the insert_one failed
-        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({
-            "Trader": "TestUser",
-            "Symbol": "AAPL",
-            "Strategy": "TestStrategy",
-            "Account_ID": "123"
-        })
-
-
+        self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({'_id': '111111'})
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock the constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_run_trader(self, mock_sendOrder, mock_init):
         # Mock relevant methods/attributes used in run_trader
-        self.api_trader.user = {"Name": "TestUser"}  # Ensure self.user["Name"] is accessible
+        self.user_mock = {"Name": "TestUser"}  # Ensure self.user["Name"] is accessible
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"
         self.api_trader.updateStatus = AsyncMock()
+        
+        self.api_trader.async_mongo.users.find_one = AsyncMock(return_value = self.user_mock)
 
         # Mock open_positions.find_one to return None (no open positions)
-        self.api_trader.async_mongo.open_positions.find_one = AsyncMock(return_value=None)
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
+        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
 
-        # Mock queue.find_one to return None (no queued orders)
-        self.api_trader.async_mongo.queue.find_one = AsyncMock(return_value=None)
+        # Mock queue.find to return None (no queued orders)
+        mock_queue_cursor = MagicMock()
+        mock_queue_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queue_cursor)
 
         # Mock strategies.find_one to return a strategy object
-        self.api_trader.async_mongo.strategies.find_one = AsyncMock(
-            return_value={"Strategy": "test_strategy", "Account_ID": "test_account", "Position_Type": "LONG", "Order_Type": "STANDARD"}
-        )
+        mock_strategies_cursor = MagicMock()
+        mock_strategies_cursor.to_list = AsyncMock(return_value=[{"Strategy": "test_strategy", "Account_ID": "test_account", "Position_Type": "LONG", "Order_Type": "STANDARD"}])
+        self.api_trader.async_mongo.strategies.find.return_value = mock_strategies_cursor
 
         # Mock forbidden symbols to be empty
-        mock_forbidden_cursor = AsyncMock()
+        mock_forbidden_cursor = MagicMock()
         mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
         self.api_trader.async_mongo.forbidden.find = MagicMock(return_value=mock_forbidden_cursor)
 
@@ -929,10 +921,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
+        """Test runTrader method when orders are dynamically generated."""
+        
         # Mock relevant methods/attributes used in run_trader
-        self.api_trader.queue = MagicMock()
         self.api_trader.user = MagicMock()
-        self.api_trader.mongo = MagicMock()
+        self.api_trader.async_mongo = MagicMock()
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"  # Set this to a specific account ID for your test
         self.api_trader.updateStatus = AsyncMock()
@@ -940,15 +933,42 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Generate dynamic test data for round-trip orders
         open_positions, strategies, quotes = generate_test_data_for_run_trader(num_positions=10)
 
-        # Mock the mongo collections to return generated data
-        self.api_trader.async_mongo.open_positions.find_one = AsyncMock(return_value=None)
-        self.api_trader.async_mongo.queue.find_one = AsyncMock(return_value=None)
-        self.api_trader.async_mongo.strategies.find_one = AsyncMock(return_value=strategies[0])
+        # Mock user dictionary
+        self.user_mock = {
+            "Name": "TestUser",
+            "ClientID": "TestClientID",
+            "Accounts": {
+                "test_account_id": {
+                    "token_path": "test_token_path"
+                }
+            }
+        }
+
+        self.api_trader.async_mongo.users.find_one = AsyncMock(return_value = self.user_mock)
 
         # Mock forbidden symbols to be empty
-        mock_forbidden_cursor = AsyncMock()
-        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])  # No forbidden symbols
-        self.api_trader.async_mongo.forbidden.find = MagicMock(return_value=mock_forbidden_cursor)
+        mock_forbidden_cursor = MagicMock()
+        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])
+        self.api_trader.async_mongo.forbidden.find.return_value = mock_forbidden_cursor
+
+        # Mock strategies to just return a single
+        mock_strategies_cursor = MagicMock()
+        mock_strategies_cursor.to_list = AsyncMock(return_value=strategies)
+        self.api_trader.async_mongo.strategies.find.return_value = mock_strategies_cursor
+
+        # Mock the async iterable for open_positions and queue collections
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=
+            [position for position in open_positions if position["Asset_Type"] == "OPTION"]
+        )
+        self.api_trader.async_mongo.open_positions.find.return_value = mock_open_positions_cursor
+
+        mock_queued_positions_cursor = MagicMock()
+        mock_queued_positions_cursor.to_list = AsyncMock(return_value=
+            [order for order in open_positions if order["Asset_Type"] == "OPTION"]
+        )
+        mock_queued_positions_cursor.to_list = AsyncMock(return_value=[])
+        self.api_trader.async_mongo.queue.find.return_value = mock_queued_positions_cursor
 
         # Mock the getQuotes method to return simulated quotes data
         self.api_trader.tdameritrade.getQuotesUnified.return_value = quotes
@@ -958,11 +978,12 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         await self.api_trader.runTrader(trade_data=trade_data)
 
         # Add assertions here
-        self.api_trader.async_mongo.open_positions.find_one.assert_called()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.queue.find_one.assert_called()  # Ensure mongo query is performed
-        self.api_trader.async_mongo.strategies.find_one.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.open_positions.find.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.queue.find.assert_called()  # Ensure mongo query is performed
+        self.api_trader.async_mongo.strategies.find.assert_called()  # Ensure mongo query is performed
         self.api_trader.updateStatus.assert_called()  # Ensure status is updated
         mock_sendOrder.assert_called()
+
 
     async def test_initialization_error_handling(self):
         # Create a mock mongo object

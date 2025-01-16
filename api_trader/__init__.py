@@ -1,6 +1,5 @@
 import asyncio
 from api_trader.position_updater import PositionUpdater
-from api_trader.quote_manager import QuoteManager
 from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
 from assets.exception_handler import exception_handler
@@ -8,7 +7,6 @@ from api_trader.order_builder import OrderBuilderWrapper
 from dotenv import load_dotenv
 from pathlib import Path
 import os
-from pymongo.errors import WriteError, WriteConcernError
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -185,126 +183,114 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
     # STEP THREE
     @exception_handler
     async def updateStatus(self):
-        """Asynchronous method to update the status of queued orders.
+        """Asynchronous method to update the status of queued orders."""
+        # Semaphore to limit concurrent tasks (e.g., max 10 concurrent tasks)
+        semaphore = asyncio.Semaphore(10)
 
-        Queries queued orders and checks their current status via the TDAmeritrade API.
-        Handles outcomes for filled, canceled, and rejected orders.
-        """
-        # Fetch queued orders asynchronously
-        queued_orders = await self.async_mongo.queue.find(
-            {"Trader": self.user["Name"], "Order_ID": {"$ne": None}, "Account_ID": self.account_id}
-        ).to_list(None)
+        queued_orders_cursor = self.async_mongo.queue.find(
+            {"Trader": self.user["Name"], "Order_ID": {"$ne": None}, "Account_ID": self.account_id},
+            {
+                "_id": 1,
+                "Order_ID": 1,
+                "Symbol": 1,
+                "Strategy": 1,
+                "Direction": 1,
+                "Account_ID": 1,
+                "Asset_Type": 1,
+                "Order_Type": 1,
+                "Qty": 1,
+                "Entry_Price": 1,
+                "Entry_Date": 1,
+                "Position_Size": 1,
+                "Position_Type": 1,
+                "Account_Position": 1,
+                "childOrderStrategies": 1,
+                "Pre_Symbol": 1,
+                "Exp_Date": 1,
+                "Option_Type": 1
+            }
+        )
 
-        for queue_order in queued_orders:
+        queued_orders = await queued_orders_cursor.to_list(None)
 
-            spec_order = await self.tdameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
+        async def process_order(queue_order):
+            async with semaphore:  # Limit concurrent tasks
+                spec_order = await self.tdameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
+                orderMessage = "Order not found or API is down." if spec_order is None else spec_order.get('message', '')
 
-            # Check if spec_order is None before attempting to access it
-            if spec_order is None:
-                orderMessage = "Order not found or API is down."
-            else:
-                orderMessage = spec_order.get('message', '')
+                if "error" in orderMessage.lower() or "Order not found" in orderMessage:
+                    custom = {"price": queue_order["Entry_Price"], "shares": queue_order["Qty"]}
+                    data_integrity = "Assumed" if self.RUN_LIVE_TRADER else "Reliable"
+                    self.logger.warning(f"Order ID not found. Moving {queue_order['Symbol']} to positions.")
+                    await self.pushOrder(queue_order, custom, data_integrity)
+                    return  # Skip processing for missing orders
 
-            # Handle cases where the order is not found or contains an error
-            if "error" in orderMessage.lower() or "Order not found" in orderMessage:
-                custom = {
-                    "price": queue_order["Entry_Price"] if queue_order["Direction"] == "OPEN POSITION" else queue_order["Exit_Price"],
-                    "shares": queue_order["Qty"]
-                }
-
-                if self.RUN_LIVE_TRADER:
-                    data_integrity = "Assumed"
-                    self.logger.warning(
-                        f"Order ID not found. Moving {queue_order['Symbol']} {queue_order['Order_Type']} order to {queue_order['Direction']} positions ({modifiedAccountID(self.account_id)})"
-                    )
+                new_status = spec_order.get("status")
+                if new_status == "FILLED":
+                    if queue_order["Order_Type"] == "OCO":
+                        queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
+                    await self.pushOrder(queue_order, spec_order)
+                elif new_status in {"CANCELED", "REJECTED"}:
+                    await self._handle_cancel_reject(queue_order, new_status)
                 else:
-                    data_integrity = "Reliable"
-                    self.logger.info(
-                        f"Paper Trader - Sending queue order to PushOrder ({modifiedAccountID(self.account_id)})"
+                    # Use _id to update the specific queued order
+                    await self.async_mongo.queue.update_one(
+                        {"_id": queue_order["_id"]},
+                        {"$set": {"Order_Status": new_status}}
                     )
 
-                await self.pushOrder(queue_order, custom, data_integrity)
-                continue
+        # Process orders concurrently with semaphore to limit parallelism
+        await asyncio.gather(*(process_order(order) for order in queued_orders))
 
-            # Extract the new status
-            new_status = spec_order.get("status")
+    async def _handle_cancel_reject(self, queue_order, new_status):
+        """Handles the logic for CANCELED or REJECTED orders"""
+        # Use _id to delete the specific queued order
+        await self.async_mongo.queue.delete_one(
+            {"_id": queue_order["_id"]}
+        )
+        other = {
+            "Symbol": queue_order["Symbol"],
+            "Order_Type": queue_order["Order_Type"],
+            "Order_Status": new_status,
+            "Strategy": queue_order["Strategy"],
+            "Trader": self.user["Name"],
+            "Date": getUTCDatetime(),
+            "Account_ID": self.account_id
+        }
+        collection = self.async_mongo.rejected if new_status == "REJECTED" else self.async_mongo.canceled
+        await collection.insert_one(other)
+        self.logger.info(f"{new_status.upper()} order for {queue_order['Symbol']} ({modifiedAccountID(self.account_id)})")
 
-            if new_status == "FILLED":
-                if queue_order["Order_Type"] == "OCO":
-                    queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
-
-                await self.pushOrder(queue_order, spec_order)
-
-            elif new_status in {"CANCELED", "REJECTED"}:
-                await self.async_mongo.queue.delete_one(
-                    {"Trader": self.user["Name"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"], "Account_ID": self.account_id}
-                )
-
-                other = {
-                    "Symbol": queue_order["Symbol"],
-                    "Order_Type": queue_order["Order_Type"],
-                    "Order_Status": new_status,
-                    "Strategy": queue_order["Strategy"],
-                    "Trader": self.user["Name"],
-                    "Date": getUTCDatetime(),
-                    "Account_ID": self.account_id
-                }
-
-                collection = self.async_mongo.rejected if new_status == "REJECTED" else self.async_mongo.canceled
-                await collection.insert_one(other)
-
-                self.logger.info(
-                    f"{new_status.upper()} order for {queue_order['Symbol']} ({modifiedAccountID(self.account_id)})"
-                )
-
-            else:
-                await self.async_mongo.queue.update_one(
-                    {"Trader": self.user["Name"], "Account_ID": queue_order["Account_ID"], "Symbol": queue_order["Symbol"], "Strategy": queue_order["Strategy"]},
-                    {"$set": {"Order_Status": new_status}}
-                )
 
     # STEP FOUR
     @exception_handler
     async def pushOrder(self, queue_order, spec_order, data_integrity="Reliable"):
-        """ METHOD PUSHES ORDER TO EITHER OPEN POSITIONS OR CLOSED POSITIONS COLLECTION IN MONGODB.
-            IF BUY ORDER, THEN PUSHES TO OPEN POSITIONS.
-            IF SELL ORDER, THEN PUSHES TO CLOSED POSITIONS.
-        """
-
+        """Pushes order to open or closed positions collection in MongoDB."""
         symbol = queue_order["Symbol"]
         strategy = queue_order["Strategy"]
         direction = queue_order["Direction"]
         account_id = queue_order["Account_ID"]
         asset_type = queue_order["Asset_Type"]
-        side = queue_order["Side"]
-        position_type = queue_order["Position_Type"]
-        position_size = queue_order["Position_Size"]
-        account_position = queue_order["Account_Position"]
         order_type = queue_order["Order_Type"]
 
-        if "orderActivityCollection" in spec_order:
-            price = spec_order["orderActivityCollection"][0]["executionLegs"][0]["price"]
-            shares = int(spec_order["quantity"])
-        else:
-            price = spec_order.get("price")
-            shares = int(queue_order.get("Qty"))
-
+        # Retrieve price and shares from spec_order
+        price = spec_order["orderActivityCollection"][0]["executionLegs"][0]["price"] if "orderActivityCollection" in spec_order else spec_order.get("price")
+        shares = int(spec_order["quantity"]) if "orderActivityCollection" in spec_order else int(queue_order.get("Qty"))
         price = round(price, 2) if price >= 1 else round(price, 4)
 
-        # Extract the entered time from the spec_order if available
         entered_time_str = spec_order.get("enteredTime")
         entry_date = convertStringToDatetime(entered_time_str) if entered_time_str else queue_order.get("Entry_Date", getUTCDatetime())
 
         obj = {
             "Symbol": symbol,
             "Strategy": strategy,
-            "Position_Size": position_size,
-            "Position_Type": position_type,
+            "Position_Size": queue_order["Position_Size"],
+            "Position_Type": queue_order["Position_Type"],
             "Data_Integrity": data_integrity,
             "Trader": self.user["Name"],
             "Account_ID": account_id,
             "Asset_Type": asset_type,
-            "Account_Position": account_position,
+            "Account_Position": queue_order["Account_Position"],
             "Order_Type": order_type
         }
 
@@ -318,75 +304,44 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 "Option_Type": queue_order["Option_Type"]
             })
 
-        collection_insert = None
-        message_to_push = None
-
+        # Handle open and close positions
         if direction == "OPEN POSITION":
-            obj.update({
-                "Qty": shares,
-                "Entry_Price": price,
-                "Entry_Date": entry_date  # Use the more accurate entry date
-            })
+            obj.update({"Qty": shares, "Entry_Price": price, "Entry_Date": entry_date})
             collection_insert = self.async_mongo.open_positions.insert_one
-            message_to_push = f">>>> \n Side: {side} \n Symbol: {symbol} \n Qty: {shares} \n Price: ${price} \n Strategy: {strategy} \n Trader: {self.user['Name']}"
-
         elif direction == "CLOSE POSITION":
-            position = await self.async_mongo.open_positions.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-            )
-            self.logger.debug(f"Query result for {symbol}: {position}")
-
-            if position is not None:
+            position = await self.async_mongo.open_positions.find_one({"_id": queue_order["_id"]})
+            if position:
                 obj.update({
                     "Qty": position["Qty"],
                     "Entry_Price": position["Entry_Price"],
-                    "Entry_Date": position["Entry_Date"],  # Use the entry date from open position
-                    "Exit_Price": price,
-                    "Exit_Date": getUTCDatetime() if position.get("Exit_Date") is None else position["Exit_Date"]
-                })
-
-                # Check if the position is already in closed_positions
-                already_closed = await self.async_mongo.closed_positions.count_documents({
-                    "Trader": self.user["Name"],
-                    "Account_ID": account_id,
-                    "Symbol": symbol,
-                    "Strategy": strategy, 
                     "Entry_Date": position["Entry_Date"],
-                    "Entry_Price": position["Entry_Price"],
                     "Exit_Price": price,
-                    "Qty": position["Qty"]
+                    "Exit_Date": getUTCDatetime() if not position.get("Exit_Date") else position["Exit_Date"]
                 })
+                collection_insert = self.async_mongo.closed_positions.insert_one
+                await self.async_mongo.open_positions.delete_one({"_id": queue_order["_id"]})
+            else:
+                return
 
-                if already_closed == 0:
-                    collection_insert = self.async_mongo.closed_positions.insert_one
-                    message_to_push = f"____ \n Side: {side} \n Symbol: {symbol} \n Qty: {position['Qty']} \n Entry Price: ${position['Entry_Price']} \n Exit Price: ${price} \n Trader: {self.user['Name']}"
-
-                is_removed = await self.async_mongo.open_positions.delete_one(
-                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
-                )
-
-                if is_removed.deleted_count == 0:
-                    self.logger.error(f"Failed to delete open position for {symbol}")
-
-        # Push to MongoDB with retry logic
-        if collection_insert:
-            try:
-                await collection_insert(obj)
-            except Exception as e:
-                self.logger.error(f"Failed to insert {symbol} into MongoDB. Retrying... - {e}")
-                try:
-                    await collection_insert(obj)
-                except Exception as e:
-                    self.logger.error(f"Retry failed for {symbol}. Error: {e}")
+        # Push to MongoDB
+        try:
+            await collection_insert(obj)
+        except Exception as e:
+            self.logger.error(f"Insert failed for {symbol}: {e}")
+            await self.retry_insert(collection_insert, obj)
 
         # Remove from Queue
-        await self.async_mongo.queue.delete_one(
-            {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-        )
+        await self.async_mongo.queue.delete_one({"_id": queue_order["_id"]})
 
-        # Send notification
-        # if message_to_push:
-        #     await self.push.send(message_to_push)
+    async def retry_insert(self, collection_insert, obj, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                await collection_insert(obj)
+                break
+            except Exception as e:
+                self.logger.error(f"Retry {attempt + 1} failed for {obj['Symbol']}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
 
     # RUN TRADER
     @exception_handler
@@ -403,25 +358,47 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             user_name = self.user["Name"]
             account_id = self.account_id
 
-            forbidden_symbols = {
-                doc['Symbol'] for doc in await self.async_mongo.forbidden.find({"Account_ID": account_id}).to_list(None)
-            }
+            # Set the cursor first
+            forbidden_cursor = self.async_mongo.forbidden.find({"Account_ID": account_id})
 
+            # Await the result of to_list()
+            forbidden_symbols = await forbidden_cursor.to_list(None)
+            forbidden_symbols = {doc['Symbol'] for doc in forbidden_symbols}
+
+            # Collect all symbols from the trade data
+            trade_data_strategies = [row["Strategy"] for row in trade_data]
+            trade_data_symbols = [row["Symbol"] for row in trade_data]
+
+            # Batch the queries into one for each collection
+            queued_orders_cursor = self.async_mongo.queue.find(
+                {"Trader": self.user["Name"], "Account_ID": self.account_id, "Symbol": {"$in": trade_data_symbols}, "Strategy": {"$in": trade_data_strategies}}
+            )
+            queued_orders = await queued_orders_cursor.to_list(None)
+
+            open_positions_cursor = self.async_mongo.open_positions.find(
+                {"Trader": self.user["Name"], "Account_ID": self.account_id, "Symbol": {"$in": trade_data_symbols}, "Strategy": {"$in": trade_data_strategies}}
+            )
+            open_positions = await open_positions_cursor.to_list(None)
+
+            strategies_cursor = self.async_mongo.strategies.find(
+                {"Account_ID": self.account_id, "Strategy": {"$in": trade_data_strategies}}
+            )
+            strategies = await strategies_cursor.to_list(None)
+
+            # Convert lists to dictionaries for faster lookup
+            queued_orders_dict = {f"{order['Symbol']}_{order['Strategy']}": order for order in queued_orders}
+            open_positions_dict = {f"{position['Symbol']}_{position['Strategy']}": position for position in open_positions}
+            strategies_dict = {strategy['Strategy']: strategy for strategy in strategies}
+
+            # Now, iterate over each row in trade_data and process the corresponding order
             for row in trade_data:
                 strategy = row["Strategy"]
                 symbol = row["Symbol"]
-                side = row["Side"]
-
-                # Fetch open position, queued order, and strategy for the current row
-                open_position = await self.async_mongo.open_positions.find_one(
-                    {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-                )
-                queued_order = await self.async_mongo.queue.find_one(
-                    {"Trader": user_name, "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
-                )
-                strategy_object = await self.async_mongo.strategies.find_one(
-                    {"Strategy": strategy, "Account_ID": account_id}
-                )
+                
+                # Lookup strategy, queued order, and open position directly by symbol and strategy
+                queued_order = queued_orders_dict.get(f"{symbol}_{strategy}")
+                open_position = open_positions_dict.get(f"{symbol}_{strategy}")
+                strategy_object = strategies_dict.get(strategy)
 
                 # Add new strategy if it doesn't exist
                 if not strategy_object:
@@ -438,25 +415,25 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 direction = None
                 if open_position:
                     # Closing existing positions
-                    if side == "BUY" and position_type == "SHORT":
+                    if row["Side"] == "BUY" and position_type == "SHORT":
                         direction = "CLOSE POSITION"  # Covering a short
-                    elif side == "SELL" and position_type == "LONG":
+                    elif row["Side"] == "SELL" and position_type == "LONG":
                         direction = "CLOSE POSITION"  # Selling a long
-                    elif side == "SELL_TO_CLOSE" and position_type == "LONG":
+                    elif row["Side"] == "SELL_TO_CLOSE" and position_type == "LONG":
                         direction = "CLOSE POSITION"  # Selling long option
-                    elif side == "BUY_TO_CLOSE" and position_type == "SHORT":
+                    elif row["Side"] == "BUY_TO_CLOSE" and position_type == "SHORT":
                         direction = "CLOSE POSITION"  # Covering short option
                     else:
                         continue  # Skip if none of the above conditions match
                 elif symbol not in forbidden_symbols:
                     # Opening new positions
-                    if side == "BUY" and position_type == "LONG":
+                    if row["Side"] == "BUY" and position_type == "LONG":
                         direction = "OPEN POSITION"  # Going long
-                    elif side == "SELL" and position_type == "SHORT":
+                    elif row["Side"] == "SELL" and position_type == "SHORT":
                         direction = "OPEN POSITION"  # Shorting
-                    elif side == "SELL_TO_OPEN" and position_type == "SHORT":
+                    elif row["Side"] == "SELL_TO_OPEN" and position_type == "SHORT":
                         direction = "OPEN POSITION"  # Opening short option
-                    elif side == "BUY_TO_OPEN" and position_type == "LONG":
+                    elif row["Side"] == "BUY_TO_OPEN" and position_type == "LONG":
                         direction = "OPEN POSITION"  # Opening long option
                     else:
                         continue  # Skip if none of the above conditions match
@@ -465,6 +442,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 if direction:
                     order_data = {**row, **open_position} if open_position else row
                     await self.sendOrder(order_data, strategy_object, direction)
+
         except asyncio.CancelledError:
             self.logger.warning("runTrader was cancelled.")
             raise  # Re-raise to let the task know it's cancelled
