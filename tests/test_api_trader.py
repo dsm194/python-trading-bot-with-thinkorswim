@@ -834,7 +834,14 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Exit_Date", called_args)
 
         # Verify that open_positions entry was removed
-        self.api_trader.async_mongo.open_positions.delete_one.assert_called_once_with({'_id': '111111'})
+        self.api_trader.async_mongo.open_positions.delete_one.assert_called_once_with(
+            {
+                "Trader": "TestUser",
+                "Account_ID": "12345",
+                "Symbol": "AAPL",
+                "Strategy": "TestStrategy",
+            }
+        )
 
         # Verify the queue deletion
         self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({'_id': '111111'})

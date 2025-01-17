@@ -201,6 +201,8 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 "Qty": 1,
                 "Entry_Price": 1,
                 "Entry_Date": 1,
+                "Exit_Price": 1,
+                "Exit_Date": 1,
                 "Position_Size": 1,
                 "Position_Type": 1,
                 "Account_Position": 1,
@@ -214,33 +216,41 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
         queued_orders = await queued_orders_cursor.to_list(None)
 
         async def process_order(queue_order):
-            async with semaphore:  # Limit concurrent tasks
-                spec_order = await self.tdameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
-                orderMessage = "Order not found or API is down." if spec_order is None else spec_order.get('message', '')
+            async with semaphore:
+                try:
+                    spec_order = await self.tdameritrade.getSpecificOrderAsync(queue_order["Order_ID"])
+                    orderMessage = "Order not found or API is down." if spec_order is None else spec_order.get('message', '')
 
-                if "error" in orderMessage.lower() or "Order not found" in orderMessage:
-                    custom = {"price": queue_order["Entry_Price"], "shares": queue_order["Qty"]}
-                    data_integrity = "Assumed" if self.RUN_LIVE_TRADER else "Reliable"
-                    self.logger.warning(f"Order ID not found. Moving {queue_order['Symbol']} to positions.")
-                    await self.pushOrder(queue_order, custom, data_integrity)
-                    return  # Skip processing for missing orders
+                    if "error" in orderMessage.lower() or "Order not found" in orderMessage:
+                        custom = {
+                            "price": queue_order["Entry_Price"] if queue_order["Direction"] == "OPEN POSITION" else queue_order["Exit_Price"],
+                            "shares": queue_order["Qty"]
+                        }
+                        data_integrity = "Assumed" if self.RUN_LIVE_TRADER else "Reliable"
 
-                new_status = spec_order.get("status")
-                if new_status == "FILLED":
-                    if queue_order["Order_Type"] == "OCO":
-                        queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
-                    await self.pushOrder(queue_order, spec_order)
-                elif new_status in {"CANCELED", "REJECTED"}:
-                    await self._handle_cancel_reject(queue_order, new_status)
-                else:
-                    # Use _id to update the specific queued order
-                    await self.async_mongo.queue.update_one(
-                        {"_id": queue_order["_id"]},
-                        {"$set": {"Order_Status": new_status}}
-                    )
+                        self.logger.warning(f"Order ID not found. Moving {queue_order['Symbol']} to positions.")
+                        await self.pushOrder(queue_order, custom, data_integrity)
+                        return
+
+                    new_status = spec_order.get("status")
+                    if new_status == "FILLED":
+                        if queue_order["Order_Type"] == "OCO":
+                            queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
+                        await self.pushOrder(queue_order, spec_order)
+                    elif new_status in {"CANCELED", "REJECTED"}:
+                        await self._handle_cancel_reject(queue_order, new_status)
+                    else:
+                        await self.async_mongo.queue.update_one(
+                            {"_id": queue_order["_id"]},
+                            {"$set": {"Order_Status": new_status}}
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error processing order for {queue_order['Symbol']}: {e}")
 
         # Process orders concurrently with semaphore to limit parallelism
-        await asyncio.gather(*(process_order(order) for order in queued_orders))
+        # Using asyncio.gather but ensuring context is correct
+        tasks = [asyncio.create_task(process_order(order)) for order in queued_orders]
+        await asyncio.gather(*tasks)
 
     async def _handle_cancel_reject(self, queue_order, new_status):
         """Handles the logic for CANCELED or REJECTED orders"""
@@ -304,31 +314,47 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 "Option_Type": queue_order["Option_Type"]
             })
 
+        collection_insert = None
+
         # Handle open and close positions
         if direction == "OPEN POSITION":
             obj.update({"Qty": shares, "Entry_Price": price, "Entry_Date": entry_date})
             collection_insert = self.async_mongo.open_positions.insert_one
         elif direction == "CLOSE POSITION":
-            position = await self.async_mongo.open_positions.find_one({"_id": queue_order["_id"]})
+            obj.update({
+                "Qty": queue_order.get("Qty"),
+                "Entry_Price": queue_order.get("Entry_Price"),
+                "Entry_Date": queue_order.get("Entry_Date"),
+                "Exit_Price": price,
+                "Exit_Date": getUTCDatetime() if not queue_order.get("Exit_Date") else queue_order["Exit_Date"]
+            })
+            
+            position = await self.async_mongo.open_positions.find_one(
+                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+            )
             if position:
                 obj.update({
                     "Qty": position["Qty"],
                     "Entry_Price": position["Entry_Price"],
-                    "Entry_Date": position["Entry_Date"],
-                    "Exit_Price": price,
-                    "Exit_Date": getUTCDatetime() if not position.get("Exit_Date") else position["Exit_Date"]
+                    "Entry_Date": position["Entry_Date"]
                 })
-                collection_insert = self.async_mongo.closed_positions.insert_one
-                await self.async_mongo.open_positions.delete_one({"_id": queue_order["_id"]})
-            else:
-                return
+
+            collection_insert = self.async_mongo.closed_positions.insert_one
+
+            is_removed = await self.async_mongo.open_positions.delete_one(
+                {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
+            )
+
+            if is_removed.deleted_count == 0:
+                self.logger.error(f"Failed to delete open position for {symbol}")
 
         # Push to MongoDB
-        try:
-            await collection_insert(obj)
-        except Exception as e:
-            self.logger.error(f"Insert failed for {symbol}: {e}")
-            await self.retry_insert(collection_insert, obj)
+        if collection_insert:
+            try:
+                await collection_insert(obj)
+            except Exception as e:
+                self.logger.error(f"Insert failed for {symbol}: {e}")
+                await self.retry_insert(collection_insert, obj)
 
         # Remove from Queue
         await self.async_mongo.queue.delete_one({"_id": queue_order["_id"]})
