@@ -44,6 +44,8 @@ class Tasks:
         }
         self.last_checkOCOtriggers_time = time.time()  # Track the last time checkOCOtriggers was run
         self.checkOCO_interval = 10  # Run checkOCOtriggers once every 10 seconds (adjustable)
+        self.last_checkOCOpapertriggers_time = time.time()  # Track the last time checkOCOtriggers was run
+        self.checkOCOpaper_interval = 10  # Run checkOCOtriggers once every 10 seconds (adjustable)
 
         super().__init__()
 
@@ -62,14 +64,19 @@ class Tasks:
 
         try:
             # Task-specific processing
+            current_time = time.time()  # Get the current timestamp once at the beginning
+
             if task == 'checkOCOtriggers':
                 # Check if enough time has passed since the last checkOCOtriggers
-                current_time = time.time()
                 if current_time - self.last_checkOCOtriggers_time >= self.checkOCO_interval:
                     await self.checkOCOtriggers()
                     self.last_checkOCOtriggers_time = current_time  # Update the last run time
             elif task == 'checkOCOpapertriggers':
-                await self.checkOCOpapertriggers()
+                # Check if enough time has passed since the last checkOCOpapertriggers
+                if current_time - self.last_checkOCOpapertriggers_time >= self.checkOCOpaper_interval:
+                    await self.checkOCOpapertriggers()
+                    self.last_checkOCOpapertriggers_time = current_time  # Update the last run time
+            # Add more task conditions as needed
         finally:
             # Mark task as complete
             self.task_status[task] = False
@@ -87,7 +94,6 @@ class Tasks:
     
     @exception_handler
     async def checkOCOpapertriggers(self):
-
         dtNow = getUTCDatetime()
 
         # Protect cached market hours access
@@ -98,7 +104,10 @@ class Tasks:
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
 
-        # Fetch all open positions for the trader and the paper account in one query
+        # Collect all symbols from the open positions that haven't been subscribed yet
+        # Check which symbols are already subscribed and filter them out from the query
+        subscribed_symbols = set(self.quote_manager.subscribed_symbols)
+
         open_positions = await self.async_mongo.open_positions.find({
             "Trader": self.user["Name"],
             "Account_ID": self.account_id,
@@ -108,12 +117,39 @@ class Tasks:
             #         "ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG",
             #         "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG",
             #         "ATRHIGHSMABREAKOUTSFILTER_DEBUG",
-            #         "MACD_XVER_8_17_9_EXP_DEBUG"
+            #         "MACD_XVER_8_17_9_EXP_DEBUG",
             #     ]
-            # }
-        }).to_list(None)  # Convert cursor to a list
+            # },
+            "$and": [
+                {"Symbol": {"$nin": list(subscribed_symbols)}},  # Symbol is NOT in subscribed symbols
+                {"Pre_Symbol": {"$nin": list(subscribed_symbols)}}  # Pre_Symbol is NOT in subscribed symbols
+            ]
+        },
+        {
+            "_id": 1,
+            "Order_ID": 1,
+            "Symbol": 1,
+            "Strategy": 1,
+            "Direction": 1,
+            "Account_ID": 1,
+            "Asset_Type": 1,
+            "Order_Type": 1,
+            "Qty": 1,
+            "Entry_Price": 1,
+            "Entry_Date": 1,
+            "Exit_Price": 1,
+            "Exit_Date": 1,
+            "Side": 1,
+            "Position_Size": 1,
+            "Position_Type": 1,
+            "Account_Position": 1,
+            "childOrderStrategies": 1,
+            "Pre_Symbol": 1,
+            "Exp_Date": 1,
+            "Option_Type": 1
+        }).to_list(None)
 
-        # Fetch strategies from MongoDB and add any new strategies to the class-level dictionary
+        # Fetch strategies from MongoDB
         strategies = await self.async_mongo.strategies.find({"Account_ID": self.account_id}).to_list(None)
 
         # Group positions by symbol and minimize API calls
@@ -131,6 +167,7 @@ class Tasks:
             seen = set()
             new_symbols = [ns for ns in new_symbols if (ns["symbol"] not in seen and not seen.add(ns["symbol"]))]
 
+            # Add new strategies to strategy_dict
             for strategy in strategies:
                 strategy_name = strategy["Strategy"]
                 if strategy_name not in self.strategy_dict:
@@ -217,11 +254,21 @@ class Tasks:
 
         try:
             # Limit the fields and use cursor iteration to avoid loading everything into memory at once
-            cursor = self.async_mongo.open_positions.find({
-                "Trader": self.user["Name"],
-                "Account_ID": self.account_id,
-                "Order_Type": "OCO"
-            }) # No projection, fetch all fields , {"_id": 0, "childOrderStrategies": 1, "Symbol": 1, "Strategy": 1, "Order_Type": 1})  # Only fetch necessary fields
+            cursor = self.async_mongo.open_positions.find(
+                {
+                    "Trader": self.user["Name"],
+                    "Account_ID": self.account_id,
+                    "Order_Type": "OCO",
+                    "Account_Position": "Live",
+                },
+                {
+                    "_id": 0,
+                    "childOrderStrategies": 1,
+                    "Symbol": 1,
+                    "Strategy": 1,
+                    "Order_Type": 1
+                }
+            )  # Only fetch necessary fields
 
             async for position in cursor:
                 try:
