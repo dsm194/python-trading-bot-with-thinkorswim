@@ -328,10 +328,11 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 "Exit_Price": price,
                 "Exit_Date": getUTCDatetime() if not queue_order.get("Exit_Date") else queue_order["Exit_Date"]
             })
-            
+
             position = await self.async_mongo.open_positions.find_one(
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
             )
+            
             if position:
                 obj.update({
                     "Qty": position["Qty"],
@@ -339,14 +340,17 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                     "Entry_Date": position["Entry_Date"]
                 })
 
-            collection_insert = self.async_mongo.closed_positions.insert_one
+                collection_insert = self.async_mongo.closed_positions.insert_one
 
-            is_removed = await self.async_mongo.open_positions.delete_one(
-                {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
-            )
+                is_removed = await self.async_mongo.open_positions.delete_one(
+                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
+                )
 
-            if is_removed.deleted_count == 0:
-                self.logger.error(f"Failed to delete open position for {symbol}")
+                if is_removed.deleted_count == 0:
+                    self.logger.error(f"Failed to delete open position for {symbol}")
+
+            else:
+                self.logger.warning(f"No open position found for {symbol} - Skipping close.")
 
         # Push to MongoDB
         if collection_insert:
