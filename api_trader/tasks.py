@@ -108,7 +108,8 @@ class Tasks:
         # Check which symbols are already subscribed and filter them out from the query
         subscribed_symbols = set(self.quote_manager.subscribed_symbols)
 
-        open_positions = await self.async_mongo.open_positions.find({
+        # Fetch open positions but only those that haven't been subscribed to yet
+        open_positions_cursor = self.async_mongo.open_positions.find({
             "Trader": self.user["Name"],
             "Account_ID": self.account_id,
             "Account_Position": "Paper",
@@ -124,8 +125,7 @@ class Tasks:
                 {"Symbol": {"$nin": list(subscribed_symbols)}},  # Symbol is NOT in subscribed symbols
                 {"Pre_Symbol": {"$nin": list(subscribed_symbols)}}  # Pre_Symbol is NOT in subscribed symbols
             ]
-        },
-        {
+        }, {
             "_id": 1,
             "Order_ID": 1,
             "Symbol": 1,
@@ -147,10 +147,20 @@ class Tasks:
             "Pre_Symbol": 1,
             "Exp_Date": 1,
             "Option_Type": 1
-        }).to_list(None)
+        })
 
-        # Fetch strategies from MongoDB
-        strategies = await self.async_mongo.strategies.find({"Account_ID": self.account_id}).to_list(None)
+        open_positions = await open_positions_cursor.to_list(None)
+
+        # Fetch strategies from MongoDB (only load the strategies needed based on open positions)
+        strategy_names = {position["Strategy"] for position in open_positions}
+        # Only query if there are new strategies to load
+        if strategy_names:
+            strategies = await self.async_mongo.strategies.find({
+                "Account_ID": self.account_id,
+                "Strategy": {"$in": list(strategy_names)}
+            }).to_list(None)
+        else:
+            strategies = []
 
         # Group positions by symbol and minimize API calls
         async with self.lock:

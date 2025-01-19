@@ -1235,7 +1235,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         
         # Mock open_positions.find to mimic AsyncIOMotorCursor
         mock_open_positions_cursor = AsyncMock()
-        mock_open_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
+        mock_open_positions = [{
+            "Symbol": "AAPL",
+            "Asset_Type": "EQUITY",
+            "Trader": self.api_trader.user,
+            "Account_ID": self.api_trader.account_id,
+            "Strategy": "TestStrategy",
+        }]
         mock_open_positions_cursor.to_list = AsyncMock(return_value=mock_open_positions)  # Mock `to_list`
         self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
         
