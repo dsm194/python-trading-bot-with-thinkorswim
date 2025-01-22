@@ -272,11 +272,27 @@ class Tasks:
                     "Account_Position": "Live",
                 },
                 {
-                    "_id": 0,
-                    "childOrderStrategies": 1,
+                    "_id": 1,
+                    "Order_ID": 1,
                     "Symbol": 1,
                     "Strategy": 1,
-                    "Order_Type": 1
+                    "Direction": 1,
+                    "Account_ID": 1,
+                    "Asset_Type": 1,
+                    "Order_Type": 1,
+                    "Qty": 1,
+                    "Entry_Price": 1,
+                    "Entry_Date": 1,
+                    "Exit_Price": 1,
+                    "Exit_Date": 1,
+                    "Side": 1,
+                    "Position_Size": 1,
+                    "Position_Type": 1,
+                    "Account_Position": 1,
+                    "childOrderStrategies": 1,
+                    "Pre_Symbol": 1,
+                    "Exp_Date": 1,
+                    "Option_Type": 1
                 }
             )  # Only fetch necessary fields
 
