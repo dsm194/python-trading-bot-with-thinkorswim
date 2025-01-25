@@ -2,20 +2,20 @@ import asyncio
 import os
 import random
 import string
-from unittest import mock
-from unittest.mock import AsyncMock, PropertyMock, patch, MagicMock, ANY
 import unittest
+from unittest import mock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
-from api_trader import ApiTrader
-
-from pymongo.errors import WriteConcernError, WriteError
 from pymongo import UpdateOne
+from pymongo.errors import WriteConcernError, WriteError
 
-from api_trader.strategies.fixed_percentage_exit import FixedPercentageExitStrategy
+from api_trader import ApiTrader
+from api_trader.strategies.fixed_percentage_exit import \
+    FixedPercentageExitStrategy
 from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
-from assets.helper_functions import modifiedAccountID
 from assets.helper_functions import getUTCDatetime, modifiedAccountID
+
 
 class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 

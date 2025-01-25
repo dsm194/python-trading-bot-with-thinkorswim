@@ -1,17 +1,17 @@
 # imports
 import asyncio
-from api_trader.strategies import fixed_percentage_exit
-from api_trader.strategies import atr_exit
-from api_trader.strategies import trailing_stop_exit
-from assets.helper_functions import getUTCDatetime
-from dotenv import load_dotenv
-from pathlib import Path
-import os
 import json
+import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from schwab.orders.common import first_triggers_second
 from schwab.orders.equities import equity_buy_limit, equity_sell_limit
-from schwab.orders.options import option_buy_to_open_limit, option_sell_to_close_limit
+from schwab.orders.options import (option_buy_to_open_limit,
+                                   option_sell_to_close_limit)
+
+from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
+from assets.helper_functions import getUTCDatetime
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 

@@ -1,6 +1,9 @@
-from api_trader.strategies.exit_strategy import ExitStrategy
-from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, one_cancels_other
+from schwab.orders.common import (Duration, OrderStrategyType, OrderType,
+                                  Session, one_cancels_other)
 from schwab.orders.generic import OrderBuilder
+
+from api_trader.strategies.exit_strategy import ExitStrategy
+
 
 class FixedPercentageExitStrategy(ExitStrategy):
 

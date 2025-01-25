@@ -1,21 +1,22 @@
 # imports
 import asyncio
-from datetime import datetime, timedelta
-import time
-import httpx
-from prompt_toolkit import PromptSession
-import websockets
-from assets.helper_functions import getUTCDatetime, modifiedAccountID
-from assets.exception_handler import exception_handler
-
-from schwab.auth import client_from_manual_flow
-from schwab.auth import client_from_token_file, __make_update_token_func as make_update_token_func, client_from_received_url, get_auth_context
-from schwab.client.base import BaseClient as schwabBaseClient
-from schwab.utils import Utils
-from schwab.streaming import StreamClient
-
 import os
+import time
+from datetime import datetime, timedelta
+
+import httpx
+import websockets
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from schwab.auth import __make_update_token_func as make_update_token_func
+from schwab.auth import (client_from_received_url, client_from_token_file,
+                         get_auth_context)
+from schwab.client.base import BaseClient as schwabBaseClient
+from schwab.streaming import StreamClient
+from schwab.utils import Utils
+
+from assets.exception_handler import exception_handler
+from assets.helper_functions import getUTCDatetime, modifiedAccountID
 
 load_dotenv(dotenv_path="config.env")
 

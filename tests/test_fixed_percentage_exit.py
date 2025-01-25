@@ -1,8 +1,12 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from api_trader.strategies.fixed_percentage_exit import FixedPercentageExitStrategy
-from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, EquityInstruction
-from schwab.orders.generic import OrderBuilder
+
+from schwab.orders.common import (Duration, EquityInstruction,
+                                  OrderStrategyType, OrderType, Session)
+
+from api_trader.strategies.fixed_percentage_exit import \
+    FixedPercentageExitStrategy
+
 
 class TestFixedPercentageExitStrategy(unittest.TestCase):
 

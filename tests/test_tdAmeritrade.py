@@ -1,11 +1,13 @@
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from schwab.client.base import BaseClient as schwabBaseClient
+
 from assets.helper_functions import modifiedAccountID
 from tdameritrade import TDAmeritrade  # Replace with actual module
-from schwab.client.base import BaseClient as schwabBaseClient
+
 
 class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 

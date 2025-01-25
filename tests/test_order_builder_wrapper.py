@@ -1,9 +1,8 @@
 import asyncio
 import unittest
-from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, patch
 from api_trader import ApiTrader, OrderBuilderWrapper
-from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
+from api_trader.strategies import fixed_percentage_exit
 
 class TestOrderBuilderWrapper(unittest.TestCase):
 

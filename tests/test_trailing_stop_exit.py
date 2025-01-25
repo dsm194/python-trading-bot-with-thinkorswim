@@ -1,8 +1,14 @@
 import unittest
-from unittest.mock import MagicMock, patch
-from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
+from unittest.mock import MagicMock
+
+from schwab.orders.common import (Duration, EquityInstruction,
+                                  OptionInstruction, OrderStrategyType,
+                                  OrderType, Session, StopPriceLinkBasis,
+                                  StopPriceLinkType)
+
 from api_trader.strategies.strategy_settings import StrategySettings
-from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, StopPriceLinkType, StopPriceLinkBasis, EquityInstruction, OptionInstruction
+from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
+
 
 # A concrete subclass for testing purposes (since ExitStrategy is abstract)
 class TestTrailingStopExitStrategy(unittest.TestCase):

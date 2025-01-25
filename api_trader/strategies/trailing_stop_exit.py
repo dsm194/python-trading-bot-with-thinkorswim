@@ -1,6 +1,10 @@
-from api_trader.strategies.exit_strategy import ExitStrategy
-from schwab.orders.common import OrderType, OrderStrategyType, Duration, Session, StopPriceLinkType, StopPriceLinkBasis
+from schwab.orders.common import (Duration, OrderStrategyType, OrderType,
+                                  Session, StopPriceLinkBasis,
+                                  StopPriceLinkType)
 from schwab.orders.generic import OrderBuilder
+
+from api_trader.strategies.exit_strategy import ExitStrategy
+
 
 class TrailingStopExitStrategy(ExitStrategy):
 

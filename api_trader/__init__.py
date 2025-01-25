@@ -1,12 +1,15 @@
 import asyncio
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from api_trader.order_builder import OrderBuilderWrapper
 from api_trader.position_updater import PositionUpdater
-from assets.helper_functions import assign_order_ids, convertStringToDatetime, getUTCDatetime, modifiedAccountID
 from api_trader.tasks import Tasks
 from assets.exception_handler import exception_handler
-from api_trader.order_builder import OrderBuilderWrapper
-from dotenv import load_dotenv
-from pathlib import Path
-import os
+from assets.helper_functions import (assign_order_ids, convertStringToDatetime,
+                                     getUTCDatetime, modifiedAccountID)
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -86,7 +89,6 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             strategy_object (dict): Strategy configuration.
             direction (str): "OPEN POSITION" or "CLOSE POSITION".
         """
-        from schwab.utils import Utils
 
         symbol = trade_data["Symbol"]
         strategy = trade_data["Strategy"]
