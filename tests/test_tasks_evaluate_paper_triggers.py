@@ -7,11 +7,13 @@ from api_trader.tasks import Tasks
 class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Mocking the quote manager and passing it to Tasks
-        quote_manager = MagicMock()
-        position_updater = AsyncMock()
-        self.tasks = Tasks(quote_manager, position_updater)
+        self.quote_manager = MagicMock()
+        self.position_updater = AsyncMock()
+        self.tasks = Tasks(self.quote_manager, self.position_updater)
         self.tasks.user = {"Name": "Test User"}
         self.tasks.account_id = "test_account_id"
+
+        self.quote_manager.unsubscribe = AsyncMock()
 
         # Mock dependencies within Tasks
         self.tasks.open_positions = MagicMock()
@@ -167,6 +169,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
             {"ExitStrategy": self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"], "Order_Type": "STANDARD"},
             "CLOSE POSITION"
         )
+        self.quote_manager.unsubscribe.assert_called_once_with("SYM1")
 
 
 if __name__ == "__main__":

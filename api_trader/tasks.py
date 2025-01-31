@@ -208,55 +208,57 @@ class Tasks:
 
     @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
-            # Callback function invoked when quotes are updated
-            # print(f"Evaluating paper triggers for {symbol}: {quote_data}")
+        # Callback function invoked when quotes are updated
+        # print(f"Evaluating paper triggers for {symbol}: {quote_data}")
 
-            async with self.lock:  # Lock during modification
-                local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
+        async with self.lock:  # Lock during modification
+            local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
 
-            for position in local_positions_by_symbol:
-                strategy_name = position["Strategy"]
-                strategy_data = self.strategy_dict.get(strategy_name)
+        for position in local_positions_by_symbol:
+            strategy_name = position["Strategy"]
+            strategy_data = self.strategy_dict.get(strategy_name)
 
-                if not strategy_data or "ExitStrategy" not in strategy_data:
-                    self.logger.warning(f"Exit strategy not found for position: {position['_id']}")
-                    continue
+            if not strategy_data or "ExitStrategy" not in strategy_data:
+                self.logger.warning(f"Exit strategy not found for position: {position['_id']}")
+                continue
 
-                exit_strategy = strategy_data["ExitStrategy"]
+            exit_strategy = strategy_data["ExitStrategy"]
 
-                # Check market hours from cached data
-                marketHours = self._cached_market_hours or {}
-                isMarketOpen = marketHours.get('isOpen', False)
+            # Check market hours from cached data
+            marketHours = self._cached_market_hours or {}
+            isMarketOpen = marketHours.get('isOpen', False)
 
-                last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
-                max_price = position.get("Max_Price", position["Entry_Price"])
+            last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
+            max_price = position.get("Max_Price", position["Entry_Price"])
 
-                # Prepare additional params if needed
-                additional_params = {
-                    "entry_price": position["Entry_Price"],
-                    "quantity": position["Qty"],
-                    "last_price": last_price,
-                    "max_price": max_price,
-                }
+            # Prepare additional params if needed
+            additional_params = {
+                "entry_price": position["Entry_Price"],
+                "quantity": position["Qty"],
+                "last_price": last_price,
+                "max_price": max_price,
+            }
 
-                # Call the should_exit method to check for exit conditions
-                exit_result = exit_strategy.should_exit(additional_params)
-                should_exit = exit_result['exit']
-                updated_max_price = exit_result["additional_params"]["max_price"]
+            # Call the should_exit method to check for exit conditions
+            exit_result = exit_strategy.should_exit(additional_params)
+            should_exit = exit_result['exit']
+            updated_max_price = exit_result["additional_params"]["max_price"]
 
-                # Update max_price in MongoDB only if updated_max_price is greater than the existing max_price or if max_price is None
-                current_max_price = position.get("Max_Price")
+            # Update max_price in MongoDB only if updated_max_price is greater than the existing max_price or if max_price is None
+            current_max_price = position.get("Max_Price")
 
-                if current_max_price is None or updated_max_price > current_max_price:
-                    await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
-                    self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
-                    position["Max_Price"] = updated_max_price
+            if current_max_price is None or updated_max_price > current_max_price:
+                await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
+                self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
+                position["Max_Price"] = updated_max_price
 
-                if should_exit:
-                    # The exit conditions are met, so we need to close the position
-                    position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
-                    strategy_data["Order_Type"] = "STANDARD"
-                    await self.sendOrder(position, strategy_data, "CLOSE POSITION")
+            if should_exit:
+                # The exit conditions are met, so we need to close the position
+                position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
+                strategy_data["Order_Type"] = "STANDARD"
+                await self.sendOrder(position, strategy_data, "CLOSE POSITION")
+                await self.quote_manager.unsubscribe(symbol)
+
 
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop

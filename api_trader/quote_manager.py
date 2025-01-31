@@ -224,6 +224,14 @@ class QuoteManager:
                 self.logger.error(f"Failed to process batch: {e}")
                 raise
 
+    async def unsubscribe(self, symbol):
+        """Removes a symbol from subscribed_symbols in constant time (O(1))."""
+        async with self.lock:  # Ensure thread-safe modification
+            if symbol in self.subscribed_symbols:
+                del self.subscribed_symbols[symbol]
+                self.logger.info(f"[QUOTE MANAGER] Unsubscribed from {symbol}.")
+            else:
+                self.logger.warning(f"[QUOTE MANAGER] Attempted to unsubscribe {symbol}, but it was not found.")
 
     async def add_callback(self, callback):
         """Add a new callback."""
