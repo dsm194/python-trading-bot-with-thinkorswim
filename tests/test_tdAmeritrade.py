@@ -59,11 +59,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
     # Patching in the correct order
     @patch('tdameritrade.client_from_token_file')  # First argument in test function
-    @patch('tdameritrade.client_from_manual_flow')  # Second argument in test function
     @patch('tdameritrade.os.path.isfile')  # Third argument in test function
     @patch('tdameritrade.API_KEY', 'mock_api_key')  # Mock API_KEY globally
     @patch('tdameritrade.APP_SECRET', 'mock_app_secret')  # Mock APP_SECRET globally
-    async def test_checkTokenValidity_token_exists(self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file):
+    async def test_checkTokenValidity_token_exists(self, mock_isfile, mock_client_from_token_file):
         # Simulate that the token file exists
         mock_isfile.return_value = True
         

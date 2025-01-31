@@ -112,6 +112,7 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
                 max_retries=5,
                 stop_event=self.quote_manager.stop_event,
                 initialized_event=self.quote_manager.stream_initialized,
+                reset_event=self.quote_manager.reset_event
             )
 
     async def test_update_stream_subscription(self):

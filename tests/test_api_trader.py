@@ -1229,48 +1229,72 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.lock = asyncio.Lock()
         api_trader.positions_by_symbol = {}
         api_trader.strategy_dict = {}
-        
+
         # Mock getMarketHours to return open market hours
         api_trader.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={"isOpen": True})
-        
+
         # Mock open_positions.find to mimic AsyncIOMotorCursor
         mock_open_positions_cursor = AsyncMock()
-        mock_open_positions = [{
+        initial_open_positions = [{
             "Symbol": "AAPL",
             "Asset_Type": "EQUITY",
-            "Trader": self.api_trader.user,
-            "Account_ID": self.api_trader.account_id,
+            "Trader": api_trader.user,
+            "Account_ID": api_trader.account_id,
             "Strategy": "TestStrategy",
         }]
-        mock_open_positions_cursor.to_list = AsyncMock(return_value=mock_open_positions)  # Mock `to_list`
-        self.api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
-        
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=initial_open_positions)
+        api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+
         # Mock strategies with a list of mock strategies
         mock_strategies_cursor = AsyncMock()
-        mock_strategies_cursor.to_list = AsyncMock(return_value=[{"Strategy": "TestStrategy", "Account_ID": self.api_trader.account_id}])  # Mock `to_list`
-        self.api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
-        
+        mock_strategies_cursor.to_list = AsyncMock(return_value=[{"Strategy": "TestStrategy", "Account_ID": api_trader.account_id}])
+        api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
+
         # Mock add_quotes as async
         api_trader.quote_manager = AsyncMock()
         api_trader.quote_manager.add_quotes = AsyncMock()
         api_trader.quote_manager.add_callback = AsyncMock()
-        
+
         # Properly mock the stop_event
         mock_stop_event = MagicMock()
-        mock_stop_event.is_set = MagicMock(return_value=False)  # is_set should not be awaitable
+        mock_stop_event.is_set = MagicMock(return_value=False)
         mock_stop_event.set = MagicMock()
         mock_stop_event.clear = MagicMock()
         mock_stop_event.wait = AsyncMock()
-        
+
         api_trader.quote_manager.stop_event = mock_stop_event
-        
+
+        # First call to checkOCOpapertriggers
         await api_trader.checkOCOpapertriggers()
 
-        # Assertions to validate that methods were called as expected
+        # Assertions after the first call
         api_trader.quote_manager.add_callback.assert_awaited_once_with(api_trader.evaluate_paper_triggers)
         api_trader.async_mongo.open_positions.find.assert_called()
         api_trader.async_mongo.strategies.find.assert_called()
         api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "AAPL", "asset_type": "EQUITY"}])
+
+        # Reset mock calls
+        api_trader.quote_manager.add_quotes.reset_mock()
+
+        # Mock subscribed_symbols to reflect the first call
+        api_trader.quote_manager.subscribed_symbols = {"AAPL"}
+
+        # Add another open position to the mock
+        new_open_positions = initial_open_positions + [{
+            "Symbol": "MSFT",
+            "Asset_Type": "EQUITY",
+            "Trader": api_trader.user,
+            "Account_ID": api_trader.account_id,
+            "Strategy": "TestStrategy",
+        }]
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=new_open_positions)
+        api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+
+        # Second call to checkOCOpapertriggers
+        await api_trader.checkOCOpapertriggers()
+
+        # Assertions after the second call
+        api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "MSFT", "asset_type": "EQUITY"}])
 
     @patch.object(ApiTrader, 'pushOrder', return_value=None)  # Mock pushOrder in ApiTrader
     async def test_checkOCOtriggers(self, mock_pushOrder):

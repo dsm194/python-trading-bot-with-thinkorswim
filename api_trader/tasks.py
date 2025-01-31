@@ -168,10 +168,18 @@ class Tasks:
         async with self.lock:
             new_symbols = []
             for position in open_positions:
+                # Determine the appropriate symbol key (Equity or Pre_Symbol)
                 symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
+
+                # Use subscribed_symbols exclusively to determine if the symbol is new
+                if symbol not in self.quote_manager.subscribed_symbols:
+                    # Add to new_symbols only if not already subscribed
+                    new_symbols.append({"symbol": symbol, "asset_type": position["Asset_Type"]})
+
+                # Always update positions_by_symbol for grouping purposes
                 if symbol not in self.positions_by_symbol:
                     self.positions_by_symbol[symbol] = []
-                    new_symbols.append({"symbol": symbol, "asset_type": position["Asset_Type"]})
+
                 if position not in self.positions_by_symbol[symbol]:
                     self.positions_by_symbol[symbol].append(position)
 

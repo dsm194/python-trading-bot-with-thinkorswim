@@ -21,10 +21,13 @@ class PositionUpdater:
         async with self.lock:
             if position_id in self.update_cache:
                 self.update_cache[position_id]["Max_Price"] = max_price
+                return  # No need to re-add if already queued
             else:
                 update = {"Max_Price": max_price}
                 self.update_cache[position_id] = update
-                await self.update_queue.put(position_id)
+
+        # Put outside lock to prevent blocking other tasks
+        await self.update_queue.put(position_id)
 
     async def worker(self):
         """Worker task to process updates from the queue in batches."""
@@ -41,12 +44,7 @@ class PositionUpdater:
                             position_id = await self.update_queue.get()
                             if position_id in self.update_cache:
                                 update = self.update_cache.pop(position_id)
-                                updates.append(
-                                    UpdateOne(
-                                        {"_id": position_id},
-                                        {"$set": update}
-                                    )
-                                )
+                                updates.append(UpdateOne({"_id": position_id}, {"$set": update}))
                             self.update_queue.task_done()
 
                     if updates:
@@ -72,6 +70,9 @@ class PositionUpdater:
         for task in self.worker_tasks:
             task.cancel()
         await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+
+        # Clear worker tasks to allow clean restart if needed
+        self.worker_tasks.clear()
 
     async def monitor_queue(self):
         """Monitor the queue size periodically."""

@@ -314,8 +314,9 @@ class TDAmeritrade:
                 else:
                     response = await self.async_client.get_quote(symbol, fields=fields)
 
-                if response.status_code != 200:
-                    self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
+                # Exit early on HTTP error
+                if response is None or response.status_code != 200:
+                    self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code if response else 'None'} ({modifiedAccountID(self.account_id)})")
                     return None
 
                 # Parse the JSON only if it's a successful response
@@ -328,7 +329,7 @@ class TDAmeritrade:
             return None
 
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, message_rate_limit=10):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=10):
         retries = 0
         self.logger.info(f"Starting stream for symbols: {symbols} ({modifiedAccountID(self.account_id)})")
 
@@ -421,7 +422,9 @@ class TDAmeritrade:
                 await self._safe_disconnect_streaming()
                 self.logger.debug(f"Disconnected. Cleaning up handlers... ({modifiedAccountID(self.account_id)})")
                 await self._clean_up_handler(quote_handler)
-                self.stream_client = StreamClient(client=self.async_client)
+                # Notify QuoteManager about the stream reset
+                if reset_event and not reset_event.is_set():
+                    reset_event.set()
 
         self.logger.info("Streaming stopped.")
 
