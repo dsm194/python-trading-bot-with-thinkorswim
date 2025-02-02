@@ -33,6 +33,7 @@ class Main:
                 print(f"Failed to remove stop signal file: {e}")
                 
         self.traders = {}  # Initialize traders dictionary here
+        self.tasks = set()
 
 
     async def connectAll(self):
@@ -90,7 +91,7 @@ class Main:
         # Example test data
         # self.not_connected.append("1112")
         # self.not_connected.append("1113")
-        
+
         tasks = []
         async for user in self.async_mongo.users.find({}):  # Iterate asynchronously over users
             for account_id in user["Accounts"].keys():
@@ -120,25 +121,51 @@ class Main:
         trade_data = await self.gmail.getEmails()  # This now works asynchronously
 
         if trade_data is not None:
-            tasks = [
-                asyncio.create_task(trader.runTrader(trade_data))
-                for trader in self.traders.values()
-            ]
-            self.logger.debug(f"Waiting for {len(tasks)} tasks to complete...")
+            # ✅ Remove tasks that are already done
+            self.tasks = {task for task in self.tasks if not task.done()}
+
+            # ✅ Prevent new tasks from running if old ones are still pending
+            if any(not task.done() for task in self.tasks):
+                self.logger.warning("Previous tasks are still running! Skipping new task creation.")
+            else:
+                new_tasks = {asyncio.create_task(trader.runTrader(trade_data)) for trader in self.traders.values()}
+                self.tasks.update(new_tasks)
+
+            self.logger.debug(f"Waiting for {len(self.tasks)} trader tasks to complete...")
+
             try:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for result in results:
-                    if isinstance(result, asyncio.CancelledError):
-                        self.logger.info("Task was cancelled gracefully.")
-                    elif isinstance(result, Exception):
-                        self.logger.error(f"Task raised an exception: {result}")
+                results = await asyncio.wait_for(
+                    asyncio.gather(*self.tasks, return_exceptions=True),
+                    timeout=30
+                )
+
+                # ✅ Explicitly remove completed tasks
+                completed_tasks = {task for task, result in zip(self.tasks, results) if task.done()}
+                self.tasks.difference_update(completed_tasks)
+
             except asyncio.TimeoutError:
-                self.logger.warning("Timeout while waiting for tasks to complete.")
-                for task in tasks:
-                    if not task.done():
+                self.logger.error("Timeout while waiting for trader tasks.")
+
+                # ✅ Cancel ONLY "trader" tasks that are still running
+                running_tasks = {task for task in self.tasks if not task.done()}
+                
+                if running_tasks:
+                    self.logger.warning(f"Cancelling {len(running_tasks)} stuck trader tasks...")
+                    for task in running_tasks:
                         task.cancel()
+
+                    # ✅ Give them a short grace period to cancel cleanly
+                    try:
+                        await asyncio.wait(running_tasks, timeout=5)
+                    except asyncio.TimeoutError:
+                        self.logger.error("Some trader tasks did not cancel in time.")
+
+                    # ✅ Remove cancelled tasks from self.tasks
+                    self.tasks.difference_update(running_tasks)
+
             finally:
-                self.logger.debug("Finished processing trader tasks.")
+                self.logger.debug(f"Finished processing trader tasks. {len(self.tasks)} remaining.")
+
         else:
             self.logger.error("Failed to retrieve trade data from emails.")
 

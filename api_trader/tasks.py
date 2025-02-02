@@ -257,7 +257,7 @@ class Tasks:
                 position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                 strategy_data["Order_Type"] = "STANDARD"
                 await self.sendOrder(position, strategy_data, "CLOSE POSITION")
-                await self.quote_manager.unsubscribe(symbol)
+                await self.quote_manager.unsubscribe([symbol])
 
 
     def stop(self):

@@ -3,7 +3,9 @@ from concurrent.futures import ThreadPoolExecutor
 import jwt  # PyJWT library for decoding tokens
 
 class QuoteManager:
-    def __init__(self, tdameritrade, logger, callback=None):
+    """Manages stock price subscriptions & streaming."""
+
+    def __init__(self, tdameritrade, logger):
         self.tdameritrade = tdameritrade
         self.logger = logger
         self.quotes = {}  # Store quotes
@@ -224,14 +226,33 @@ class QuoteManager:
                 self.logger.error(f"Failed to process batch: {e}")
                 raise
 
-    async def unsubscribe(self, symbol):
-        """Removes a symbol from subscribed_symbols in constant time (O(1))."""
-        async with self.lock:  # Ensure thread-safe modification
-            if symbol in self.subscribed_symbols:
-                del self.subscribed_symbols[symbol]
-                self.logger.info(f"[QUOTE MANAGER] Unsubscribed from {symbol}.")
-            else:
-                self.logger.warning(f"[QUOTE MANAGER] Attempted to unsubscribe {symbol}, but it was not found.")
+    async def unsubscribe(self, symbols):
+        """Unsubscribes a list of symbols from streaming and removes them from subscribed_symbols."""
+
+        symbols_to_unsubscribe = []
+
+        # ✅ Use lock only when modifying `subscribed_symbols`
+        async with self.lock:
+            for symbol in symbols:
+                if symbol in self.subscribed_symbols:
+                    symbols_to_unsubscribe.append(symbol)
+                    del self.subscribed_symbols[symbol]  # ✅ Remove from tracking list
+
+        if symbols_to_unsubscribe:
+            self.logger.info(f"[QUOTE MANAGER] Unsubscribing from {symbols_to_unsubscribe}.")
+
+            # ✅ Call the API outside the lock to avoid blocking other tasks
+            await self._unsubscribe_from_stream(symbols_to_unsubscribe)
+        else:
+            self.logger.warning(f"[QUOTE MANAGER] No matching symbols found in subscribed_symbols for unsubscribe.")
+
+    async def _unsubscribe_from_stream(self, symbols):
+        """Sends an unsubscribe request for a batch of symbols to the streaming API."""
+        try:
+            await self.tdameritrade.unsubscribe_symbols(symbols)  # ✅ Call the broker's API to stop streaming
+            self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {symbols}.")
+        except Exception as e:
+            self.logger.error(f"[QUOTE MANAGER] Failed to unsubscribe symbols: {symbols}, Error: {e}")
 
     async def add_callback(self, callback):
         """Add a new callback."""

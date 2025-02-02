@@ -6,10 +6,12 @@ from dotenv import load_dotenv
 
 from api_trader.order_builder import OrderBuilderWrapper
 from api_trader.position_updater import PositionUpdater
+from api_trader.quote_manager_pool import QuoteManagerPool
 from api_trader.tasks import Tasks
 from assets.exception_handler import exception_handler
 from assets.helper_functions import (assign_order_ids, convertStringToDatetime,
                                      getUTCDatetime, modifiedAccountID)
+from tdameritrade import TDAmeritrade
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,7 +22,7 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 class ApiTrader(Tasks, OrderBuilderWrapper):
 
-    def __init__(self, user, async_mongo, push, logger, account_id, tdameritrade, quote_manager_pool):
+    def __init__(self, user, async_mongo, push, logger, account_id, tdameritrade: TDAmeritrade, quote_manager_pool: QuoteManagerPool):
         """
         Args:
             user ([dict]): [USER DATA FOR CURRENT INSTANCE]

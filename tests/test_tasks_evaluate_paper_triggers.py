@@ -169,7 +169,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
             {"ExitStrategy": self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"], "Order_Type": "STANDARD"},
             "CLOSE POSITION"
         )
-        self.quote_manager.unsubscribe.assert_called_once_with("SYM1")
+        self.quote_manager.unsubscribe.assert_called_once_with(["SYM1"])
 
 
 if __name__ == "__main__":

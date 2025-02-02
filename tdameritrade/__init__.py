@@ -329,7 +329,7 @@ class TDAmeritrade:
             return None
 
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=10):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=5):
         retries = 0
         self.logger.info(f"Starting stream for symbols: {symbols} ({modifiedAccountID(self.account_id)})")
 
@@ -363,6 +363,7 @@ class TDAmeritrade:
                     # Cancel remaining tasks
                     for task in pending:
                         task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
 
                     # If stop_event is set, exit gracefully
                     if stop_event.is_set():
@@ -468,6 +469,7 @@ class TDAmeritrade:
 
     @exception_handler
     async def update_subscription(self, symbols):
+        """Updates list of subscribed symbols."""
         self.logger.debug(f"Updating subscription with symbols: {symbols}")
         
         equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
@@ -500,6 +502,25 @@ class TDAmeritrade:
                     ],
                 )
                 self.logger.debug(f"Successfully subscribed to option symbols: {option_symbols}")
+
+    @exception_handler
+    async def unsubscribe_symbols(self, symbols):
+        """Sends an unsubscribe request to the broker's streaming API."""
+        self.logger.debug(f"[UNSUBSCRIBE] Processing unsubscribe request for: {symbols}")
+
+        equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
+        option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
+
+        async with self.lock:  # Ensure thread-safety
+            if equity_symbols:
+                self.logger.debug(f"[UNSUBSCRIBE] Unsubscribing equity symbols: {equity_symbols}")
+                await asyncio.wait_for(self.stream_client.level_one_equity_unsubs(equity_symbols), timeout=10)
+                self.logger.info(f"[TDA] Successfully unsubscribed equities: {equity_symbols}")
+
+            if option_symbols:
+                self.logger.debug(f"[UNSUBSCRIBE] Unsubscribing option symbols: {option_symbols}")
+                await asyncio.wait_for(self.stream_client.level_one_option_unsubs(option_symbols), timeout=10)
+                self.logger.info(f"[TDA] Successfully unsubscribed options: {option_symbols}")
 
     async def _safe_connect_to_streaming(self, retries=3, delay=5):
         for attempt in range(retries):

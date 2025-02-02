@@ -7,7 +7,7 @@ class QuoteManagerPool:
         self.managers = {}
         self.loop = loop
 
-    def get_or_create_manager(self, tdameritrade, logger, callback=None):
+    def get_or_create_manager(self, tdameritrade, logger):
         asyncio.set_event_loop(self.loop)
         # Extract the underlying account ID
         account_id = QuoteManager._extract_underlying_account_id(tdameritrade.async_client.token_metadata.token, logger)
@@ -17,7 +17,7 @@ class QuoteManagerPool:
 
         # Check if a manager for this account ID already exists
         if account_id not in self.managers:
-            self.managers[account_id] = QuoteManager(tdameritrade, logger, callback)
+            self.managers[account_id] = QuoteManager(tdameritrade, logger)
         
         return self.managers[account_id]
 

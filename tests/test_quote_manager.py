@@ -1,6 +1,12 @@
+import asyncio
+import random
+import string
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import jwt
+from mock_objects.mock_streaming_server import MockStreamingServer
+
 from api_trader.quote_manager import QuoteManager
 
 
@@ -8,7 +14,7 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         # Mock necessary dependencies
         self.logger_mock = MagicMock()
-        self.tdameritrade_mock = MagicMock()
+        self.tdameritrade_mock = AsyncMock()
         self.tdameritrade_mock.async_client.token_metadata.token = {"id_token": "mocked_token"}
         self.quote_manager = QuoteManager(tdameritrade=self.tdameritrade_mock, logger=self.logger_mock)
 
@@ -123,6 +129,68 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.tdameritrade_mock, 'update_subscription', AsyncMock()) as mock_update_subscription:
             await self.quote_manager._update_stream_subscription(symbols)
             mock_update_subscription.assert_called_once_with(symbols)
+
+    async def test_quote_streaming_and_unsubscribe(self):
+        """Tests subscribing, receiving price updates, and unsubscribing using a mock stream."""
+        
+        mock_stream_server = MockStreamingServer()
+
+        # ✅ Mock `tdameritrade` to behave like `MockStreamingServer`
+        self.tdameritrade_mock.update_subscription = mock_stream_server.update_subscription
+        self.tdameritrade_mock.unsubscribe_symbols = mock_stream_server.unsubscribe_symbols
+        self.tdameritrade_mock.start_stream = mock_stream_server.start_stream  # ✅ Ensure QuoteManager can call start_stream()
+
+        # ✅ Generate 1000 random stock tickers
+        def generate_random_ticker():
+            return ''.join(random.choices(string.ascii_uppercase, k=random.randint(2, 5)))
+
+        symbols = [{"symbol": generate_random_ticker(), "asset_type": "EQUITY"} for _ in range(1000)]
+
+        # ✅ Track received price updates
+        received_quotes = {}
+
+        async def quote_callback(updates):
+            """Receives price updates and stores them."""
+            received_quotes.update(updates)
+
+        mock_stream_server.add_callback(quote_callback)
+
+        # ✅ Start the streaming service in the background
+        # ✅ Start the streaming service properly using `start_stream()` instead of `start()`
+        stream_task = asyncio.create_task(mock_stream_server.start_stream(
+            symbols,
+            quote_handler=quote_callback,
+            max_retries=5,
+            stop_event=asyncio.Event(),
+            initialized_event=asyncio.Event(),
+            reset_event=asyncio.Event(),
+        ))
+
+        # ✅ Subscribe to symbols
+        await self.quote_manager.add_quotes(symbols)
+
+        # ✅ Allow some time for updates to arrive
+        await asyncio.sleep(5)
+
+        # ✅ Verify that updates have been received
+        assert len(received_quotes) > 0, "No price updates received!"
+
+        # ✅ Unsubscribe from half the symbols
+        to_unsubscribe = [s["symbol"] for s in symbols[:500]]
+        await self.quote_manager.unsubscribe(to_unsubscribe)
+
+        # ✅ Ensure the unsubscribed symbols stop receiving updates
+        received_quotes.clear()
+        await asyncio.sleep(5)  # ✅ Wait for another round of updates
+
+        for symbol in to_unsubscribe:
+            assert symbol not in received_quotes, f"Unsubscribed symbol {symbol} still receiving updates!"
+
+        # ✅ Stop the streaming service
+        await mock_stream_server.stop()
+        stream_task.cancel()
+
+        print("✅ Streaming and unsubscribe test passed!")
 
     async def asyncTearDown(self):
         await self.quote_manager.stop_streaming()

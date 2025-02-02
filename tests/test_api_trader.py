@@ -938,6 +938,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.updateStatus = AsyncMock()
 
         # Generate dynamic test data for round-trip orders
+        # TODO: on occasion, this will generate data that does not match the test conditions, and the test fails
         open_positions, strategies, quotes = generate_test_data_for_run_trader(num_positions=10)
 
         # Mock user dictionary
