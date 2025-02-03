@@ -251,8 +251,19 @@ class QuoteManager:
     async def _unsubscribe_from_stream(self, symbols):
         """Sends an unsubscribe request for a batch of symbols to the streaming API."""
         try:
-            await self.tdameritrade.unsubscribe_symbols(symbols)  # ✅ Call the broker's API to stop streaming
-            self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {symbols}.")
+            # ✅ Ensure we pass a list of dictionaries (not just symbols)
+            structured_symbols = [
+                self.subscribed_symbols[symbol]
+                for symbol in symbols
+                if symbol in self.subscribed_symbols
+            ]
+
+            if structured_symbols:
+                await self.tdameritrade.unsubscribe_symbols(structured_symbols)  # ✅ Call API with correct format
+                self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {structured_symbols}.")
+            else:
+                self.logger.warning(f"[QUOTE MANAGER] No valid structures found for symbols: {symbols}")
+
         except Exception as e:
             self.logger.error(f"[QUOTE MANAGER] Failed to unsubscribe symbols: {symbols}, Error: {e}")
 
