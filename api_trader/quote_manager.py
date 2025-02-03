@@ -2,10 +2,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import jwt  # PyJWT library for decoding tokens
 
+from tdameritrade import TDAmeritrade
+
 class QuoteManager:
     """Manages stock price subscriptions & streaming."""
 
-    def __init__(self, tdameritrade, logger):
+    def __init__(self, tdameritrade: TDAmeritrade, logger):
         self.tdameritrade = tdameritrade
         self.logger = logger
         self.quotes = {}  # Store quotes

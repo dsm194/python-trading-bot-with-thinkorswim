@@ -136,9 +136,9 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
         mock_stream_server = MockStreamingServer()
 
         # ✅ Mock `tdameritrade` to behave like `MockStreamingServer`
-        self.tdameritrade_mock.update_subscription = mock_stream_server.update_subscription
-        self.tdameritrade_mock.unsubscribe_symbols = mock_stream_server.unsubscribe_symbols
-        self.tdameritrade_mock.start_stream = mock_stream_server.start_stream  # ✅ Ensure QuoteManager can call start_stream()
+        self.tdameritrade_mock.update_subscription = AsyncMock(side_effect=mock_stream_server.update_subscription)
+        self.tdameritrade_mock.unsubscribe_symbols = AsyncMock(side_effect=mock_stream_server.unsubscribe_symbols)
+        self.tdameritrade_mock.start_stream = AsyncMock(side_effect=mock_stream_server.start_stream)
 
         # ✅ Generate 1000 random stock tickers
         def generate_random_ticker():
