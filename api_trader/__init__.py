@@ -172,7 +172,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             order (dict): Order data to be placed in the queue collection.
         """
         # Asynchronously update or insert into the queue
-        await self.async_mongo.queue.update_one(
+        result = await self.async_mongo.queue.update_one(
             {
                 "Trader": self.user["Name"],
                 "Account_ID": order["Account_ID"],
@@ -182,7 +182,12 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             {"$set": order},
             upsert=True
         )
-        self.logger.debug(f"Order queued successfully: {order}")
+
+        # Check if a new document was inserted
+        if result.upserted_id:
+            self.logger.debug(f"[API Trader] Inserted new queue entry: {order['Symbol']}, _id: {result.upserted_id}")
+        else:
+            self.logger.debug(f"[API Trader] Updated existing queue entry: {order['Symbol']}")
 
     # STEP THREE
     @exception_handler
@@ -365,7 +370,12 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                 await self.retry_insert(collection_insert, obj)
 
         # Remove from Queue
-        await self.async_mongo.queue.delete_one({"_id": queue_order["_id"]})
+        delete_result = await self.async_mongo.queue.delete_one({"_id": queue_order["_id"]})
+
+        if delete_result.deleted_count == 0:
+            self.logger.error(f"[API Trader] Failed to delete queue entry for {symbol}, _id: {queue_order['_id']}")
+        else:
+            self.logger.debug(f"[API Trader] Successfully deleted queue entry for {symbol}, _id: {queue_order['_id']}")
 
     async def retry_insert(self, collection_insert, obj, max_retries=3):
         for attempt in range(max_retries):
