@@ -434,29 +434,36 @@ class TDAmeritrade:
         equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
         option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
 
+        tasks = []
         async with self.lock:
             if equity_symbols:
                 if quote_handler not in self.registered_handlers["equity"]:
                     self.stream_client.add_level_one_equity_handler(quote_handler)
                     self.registered_handlers["equity"].add(quote_handler)
-                await self.stream_client.level_one_equity_add(equity_symbols, fields=[
-                    StreamClient.LevelOneEquityFields.SYMBOL,
-                    StreamClient.LevelOneEquityFields.BID_PRICE,
-                    StreamClient.LevelOneEquityFields.ASK_PRICE,
-                    StreamClient.LevelOneEquityFields.LAST_PRICE,
-                    StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
-                ])
+                tasks.append(asyncio.create_task(
+                    self.stream_client.level_one_equity_add(equity_symbols, fields=[
+                        StreamClient.LevelOneEquityFields.SYMBOL,
+                        StreamClient.LevelOneEquityFields.BID_PRICE,
+                        StreamClient.LevelOneEquityFields.ASK_PRICE,
+                        StreamClient.LevelOneEquityFields.LAST_PRICE,
+                        StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE
+                    ])
+                ))
 
             if option_symbols:
                 if quote_handler not in self.registered_handlers["option"]:
                     self.stream_client.add_level_one_option_handler(quote_handler)
                     self.registered_handlers["option"].add(quote_handler)
-                await self.stream_client.level_one_option_add(option_symbols, fields=[
-                    StreamClient.LevelOneOptionFields.SYMBOL,
-                    StreamClient.LevelOneOptionFields.BID_PRICE,
-                    StreamClient.LevelOneOptionFields.ASK_PRICE,
-                    StreamClient.LevelOneOptionFields.LAST_PRICE,
-                ])
+                tasks.append(asyncio.create_task(
+                    self.stream_client.level_one_option_add(option_symbols, fields=[
+                        StreamClient.LevelOneOptionFields.SYMBOL,
+                        StreamClient.LevelOneOptionFields.BID_PRICE,
+                        StreamClient.LevelOneOptionFields.ASK_PRICE,
+                        StreamClient.LevelOneOptionFields.LAST_PRICE,
+                    ])
+                ))
+        if tasks:
+            await asyncio.gather(*tasks)  # Now waiting is outside the lock
 
     async def _clean_up_handler(self, quote_handler):
         async with self.lock:
@@ -469,16 +476,18 @@ class TDAmeritrade:
 
     @exception_handler
     async def update_subscription(self, symbols):
-        """Updates list of subscribed symbols."""
-        self.logger.debug(f"Updating subscription with symbols: {symbols}")
-        
+        """Updates list of subscribed symbols without unnecessary locks."""
+        self.logger.debug(f"[TDA] Entering update_subscription() with symbols: {symbols}")
+
         equity_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "EQUITY"]
         option_symbols = [entry["symbol"] for entry in symbols if entry["asset_type"] == "OPTION"]
-        
-        async with self.lock:  # Ensure thread-safety
+
+        try:
+            tasks = []  # ✅ Track all created tasks
+
             if equity_symbols:
-                self.logger.debug(f"Subscribing to equity symbols: {equity_symbols}")
-                await self.stream_client.level_one_equity_add(
+                self.logger.debug(f"[TDA] Preparing to subscribe to equity symbols: {equity_symbols}")
+                task = asyncio.create_task(asyncio.wait_for(self.stream_client.level_one_equity_add(
                     symbols=equity_symbols,
                     fields=[
                         StreamClient.LevelOneEquityFields.SYMBOL,
@@ -487,12 +496,12 @@ class TDAmeritrade:
                         StreamClient.LevelOneEquityFields.LAST_PRICE,
                         StreamClient.LevelOneEquityFields.REGULAR_MARKET_LAST_PRICE,
                     ],
-                )
-                self.logger.debug(f"Successfully subscribed to equity symbols: {equity_symbols}")
-            
+                ), timeout=10))  # Add timeout for individual tasks
+                tasks.append(task)
+
             if option_symbols:
-                self.logger.debug(f"Subscribing to option symbols: {option_symbols}")
-                await self.stream_client.level_one_option_add(
+                self.logger.debug(f"[TDA] Preparing to subscribe to option symbols: {option_symbols}")
+                task = asyncio.create_task(asyncio.wait_for(self.stream_client.level_one_option_add(
                     symbols=option_symbols,
                     fields=[
                         StreamClient.LevelOneOptionFields.SYMBOL,
@@ -500,8 +509,32 @@ class TDAmeritrade:
                         StreamClient.LevelOneOptionFields.ASK_PRICE,
                         StreamClient.LevelOneOptionFields.LAST_PRICE,
                     ],
-                )
-                self.logger.debug(f"Successfully subscribed to option symbols: {option_symbols}")
+                ), timeout=10))  # Add timeout for individual tasks
+                tasks.append(task)
+
+            if tasks:
+                self.logger.debug(f"[TDA] Waiting for subscription tasks to complete: {tasks}")
+                done, pending = await asyncio.wait(tasks, timeout=10)
+                self.logger.debug(f"[TDA] Subscription tasks completed. Done: {done}, Pending: {pending}")
+
+                # ✅ Log and cancel any stuck tasks
+                for task in pending:
+                    self.logger.warning(f"[TDA] Task {task} did not complete in time, cancelling...")
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+                self.logger.debug(f"[TDA] Successfully updated subscription for {symbols}")
+
+        except asyncio.TimeoutError:
+            self.logger.error(f"[TDA] Timeout while updating subscription for symbols: {symbols}")
+            raise
+
+        except Exception as e:
+            self.logger.error(f"[TDA] Failed to update subscription: {e}")
+            raise
+
+        self.logger.debug(f"[TDA] Exiting update_subscription() for symbols: {symbols}")
+
 
     @exception_handler
     async def unsubscribe_symbols(self, symbols):
@@ -578,9 +611,10 @@ class TDAmeritrade:
                 self.logger.debug(f"Successfully logged out of the streaming service. ({modifiedAccountID(self.account_id)})")
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout during logout. Forcing WebSocket closure.")
-                if hasattr(self.stream_client, "_socket") and self.stream_client._socket:
+                if hasattr(self.stream_client, "_socket") and self.stream_client._socket and not self.stream_client._socket.closed:
                     self.logger.debug("Forcing WebSocket close.")
                     await self.stream_client._socket.close()
+
         except asyncio.CancelledError:
             self.logger.warning(f"Task cancellation acknowledged during logout. ({modifiedAccountID(self.account_id)})")
             raise  # Re-raise the cancellation
