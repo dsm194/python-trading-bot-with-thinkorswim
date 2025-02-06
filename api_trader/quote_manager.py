@@ -116,7 +116,6 @@ class QuoteManager:
 
     async def _trigger_callbacks(self, symbol, quote):
         """Triggers all registered callbacks for a given quote."""
-
         self.logger.debug(f"Triggering callbacks for {symbol}")
         tasks = []
         for callback in self.callbacks:
@@ -128,7 +127,7 @@ class QuoteManager:
         for result in results:
             if isinstance(result, Exception):
                 self.logger.error(f"Callback error for {symbol}: {result}")
-
+                raise RuntimeError(f"Callback errors for {symbol}: {result}")
     
     async def _invoke_callback(self, callback, symbol, quote):
         """Invoke a callback, handling both async and sync functions."""
@@ -188,24 +187,40 @@ class QuoteManager:
             self.is_streaming = False
             raise
 
-    async def _update_stream_subscription(self, new_symbols):
-        """Update the stream with new symbols."""
-        async with self.stream_lock:  # Prevent concurrent stream operations
-            await self.stream_initialized.wait()
+    async def _update_stream_subscription(self, symbols_to_update):
+        """Update the stream with new symbols while preventing deadlocks."""
+        self.logger.debug(f"[QUOTE MANAGER] Starting stream update for {len(symbols_to_update)} symbols: {symbols_to_update}")
 
+        if not self.stream_initialized.is_set():
+            self.logger.warning("[QUOTE MANAGER] Stream not initialized yet. Waiting...")
+
+        await self.stream_initialized.wait()
+        self.logger.debug(f"[QUOTE MANAGER] Stream initialized. Proceeding with subscription update.")
+
+        # ✅ Now update `subscribed_symbols` safely in a separate step
+        async with self.lock:
+            for entry in symbols_to_update:
+                self.subscribed_symbols[entry["symbol"]] = entry
+
+        # ✅ Call update_subscription() *after* releasing all locks
+        try:
+            self.logger.debug(f"[QUOTE MANAGER] Calling update_subscription() with {symbols_to_update}")
+
+            # Add a forced timeout to catch any hanging issue
+            await asyncio.wait_for(self.tdameritrade.update_subscription(symbols_to_update), timeout=15)
+
+            self.logger.debug(f"[QUOTE MANAGER] Returned from update_subscription()")  # 🚨 This will tell us if execution continues
+            self.logger.debug(f"[QUOTE MANAGER] Successfully updated subscription for {len(symbols_to_update)} symbols.")
+        except asyncio.TimeoutError:
+            self.logger.error(f"[QUOTE MANAGER] Timeout waiting for update_subscription() to return!")
+        except Exception as e:
+            self.logger.error(f"[QUOTE MANAGER] Failed to update stream subscription: {e}")
+            
+            # ✅ Rollback added symbols *outside* the lock
             async with self.lock:
-                try:
-                    for entry in new_symbols:
-                        self.subscribed_symbols[entry["symbol"]] = entry
-
-                    # Call the update_subscription method with the new structure
-                    await self.tdameritrade.update_subscription(new_symbols)
-                except Exception as e:
-                    self.logger.error(f"Failed to update stream subscription: {e}")
-                    # Rollback the added symbols on failure
-                    for s in new_symbols:
-                        self.subscribed_symbols.pop(s["symbol"], None)  # Remove the key, ignore if not found
-                    raise
+                for s in symbols_to_update:
+                    self.subscribed_symbols.pop(s["symbol"], None)  # Remove key, ignore if not found
+            raise
 
     async def add_quotes(self, symbols, batch_size=10):
         async with self.lock:
@@ -233,39 +248,38 @@ class QuoteManager:
 
         symbols_to_unsubscribe = []
 
-        # ✅ Use lock only when modifying `subscribed_symbols`
         async with self.lock:
-            for symbol in symbols:
-                if symbol in self.subscribed_symbols:
-                    symbols_to_unsubscribe.append(symbol)
-                    del self.subscribed_symbols[symbol]  # ✅ Remove from tracking list
+            # ✅ First, copy the structures BEFORE removing from self.subscribed_symbols
+            symbols_to_unsubscribe = [
+                self.subscribed_symbols[symbol]
+                for symbol in symbols if symbol in self.subscribed_symbols
+            ]
 
         if symbols_to_unsubscribe:
             self.logger.info(f"[QUOTE MANAGER] Unsubscribing from {symbols_to_unsubscribe}.")
 
-            # ✅ Call the API outside the lock to avoid blocking other tasks
+            # ✅ Call API first before removing from tracking list
             await self._unsubscribe_from_stream(symbols_to_unsubscribe)
+
+            # ✅ Only remove AFTER successful API call
+            async with self.lock:
+                for entry in symbols_to_unsubscribe:
+                    self.subscribed_symbols.pop(entry["symbol"], None)
+
         else:
             self.logger.warning(f"[QUOTE MANAGER] No matching symbols found in subscribed_symbols for unsubscribe.")
 
-    async def _unsubscribe_from_stream(self, symbols):
+    async def _unsubscribe_from_stream(self, structured_symbols):
         """Sends an unsubscribe request for a batch of symbols to the streaming API."""
         try:
-            # ✅ Ensure we pass a list of dictionaries (not just symbols)
-            structured_symbols = [
-                self.subscribed_symbols[symbol]
-                for symbol in symbols
-                if symbol in self.subscribed_symbols
-            ]
-
             if structured_symbols:
                 await self.tdameritrade.unsubscribe_symbols(structured_symbols)  # ✅ Call API with correct format
                 self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {structured_symbols}.")
             else:
-                self.logger.warning(f"[QUOTE MANAGER] No valid structures found for symbols: {symbols}")
+                self.logger.warning(f"[QUOTE MANAGER] No valid structures found for unsubscribe.")
 
         except Exception as e:
-            self.logger.error(f"[QUOTE MANAGER] Failed to unsubscribe symbols: {symbols}, Error: {e}")
+            self.logger.error(f"[QUOTE MANAGER] Failed to unsubscribe symbols: {structured_symbols}, Error: {e}")
 
     async def add_callback(self, callback):
         """Add a new callback."""

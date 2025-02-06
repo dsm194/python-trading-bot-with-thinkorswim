@@ -208,11 +208,13 @@ class Tasks:
 
     @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
-        # Callback function invoked when quotes are updated
-        # print(f"Evaluating paper triggers for {symbol}: {quote_data}")
+        """ Evaluates whether a position should be exited based on updated quote data. """
 
         async with self.lock:  # Lock during modification
             local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
+
+        # List to track positions that should be removed
+        positions_to_remove = []
 
         for position in local_positions_by_symbol:
             strategy_name = position["Strategy"]
@@ -224,14 +226,14 @@ class Tasks:
 
             exit_strategy = strategy_data["ExitStrategy"]
 
-            # Check market hours from cached data
+            # Determine whether the market is open (use REGULAR_MARKET_LAST_PRICE if closed)
             marketHours = self._cached_market_hours or {}
             isMarketOpen = marketHours.get('isOpen', False)
 
             last_price = quote_data["last_price"] if isMarketOpen or position["Asset_Type"] == "OPTION" else quote_data["regular_market_last_price"]
             max_price = position.get("Max_Price", position["Entry_Price"])
 
-            # Prepare additional params if needed
+            # Prepare additional params for exit strategy
             additional_params = {
                 "entry_price": position["Entry_Price"],
                 "quantity": position["Qty"],
@@ -239,14 +241,13 @@ class Tasks:
                 "max_price": max_price,
             }
 
-            # Call the should_exit method to check for exit conditions
+            # Check if the exit conditions are met
             exit_result = exit_strategy.should_exit(additional_params)
             should_exit = exit_result['exit']
             updated_max_price = exit_result["additional_params"]["max_price"]
 
             # Update max_price in MongoDB only if updated_max_price is greater than the existing max_price or if max_price is None
             current_max_price = position.get("Max_Price")
-
             if current_max_price is None or updated_max_price > current_max_price:
                 await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
                 self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
@@ -257,8 +258,28 @@ class Tasks:
                 position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                 strategy_data["Order_Type"] = "STANDARD"
                 await self.sendOrder(position, strategy_data, "CLOSE POSITION")
-                await self.quote_manager.unsubscribe([symbol])
 
+                # Mark this position for removal
+                positions_to_remove.append(position)
+
+        # 🔍 **NEW: Remove closed positions from `self.positions_by_symbol`**
+        should_unsubscribe = False
+        
+        async with self.lock:
+            if positions_to_remove:
+                self.positions_by_symbol[symbol] = [
+                    pos for pos in self.positions_by_symbol[symbol] if pos not in positions_to_remove
+                ]
+                # If no more positions remain, clean up and prepare to unsubscribe
+                should_unsubscribe = not self.positions_by_symbol[symbol]
+                if should_unsubscribe:
+                    del self.positions_by_symbol[symbol]  # Clean up empty entries
+                    self.logger.info(f"No remaining positions for {symbol}. Unsubscribing.")
+
+        # ✅ Release the lock first, then unsubscribe
+        if should_unsubscribe:
+            task = asyncio.create_task(self.quote_manager.unsubscribe([symbol]))
+            await task  # ✅ Ensures completion before function exits
 
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop
