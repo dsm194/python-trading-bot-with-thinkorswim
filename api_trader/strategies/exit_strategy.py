@@ -6,13 +6,13 @@ class ExitStrategy(ABC):
         self.strategy_settings = strategy_settings
 
     @abstractmethod
-    def should_exit(self, additional_params):
+    async def should_exit(self, additional_params):
         """
         Checks whether an exit condition is met.
         """
         pass
 
-    def apply_exit_strategy(self, trade_data, always_create_exit=True):
+    async def apply_exit_strategy(self, trade_data, always_create_exit=True):
         """
         Uses the exit strategy to create exit orders based on conditions.
         Calls the should_exit method to determine if the exit condition is met.
@@ -30,23 +30,23 @@ class ExitStrategy(ABC):
         }
 
         # Check if the exit condition is met
-        result = self.should_exit(additional_params)
+        result = await self.should_exit(additional_params)
 
         if result['exit'] or always_create_exit:
             # Delegate the actual order creation to the subclass
-            return self.create_exit_order(result)
+            return await self.create_exit_order(result)
 
         return None  # No exit condition met
 
     @abstractmethod
-    def create_exit_order(self, exit_result):
+    async def create_exit_order(self, exit_result):
         """
         Subclasses should implement this to return the correct type of exit order.
         This can be a single order, OCO, trailing stop, or any other type of order.
         """
         raise NotImplementedError("Subclasses should implement this method.")
 
-    def get_instruction_for_side(self, assetType, side):
+    async def get_instruction_for_side(self, assetType, side):
         from api_trader.order_builder import AssetType
         from schwab.orders.common import EquityInstruction, OptionInstruction
 

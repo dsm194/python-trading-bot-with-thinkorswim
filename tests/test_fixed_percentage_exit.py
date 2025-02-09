@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from schwab.orders.common import (Duration, EquityInstruction,
                                   OrderStrategyType, OrderType, Session)
@@ -8,7 +8,7 @@ from api_trader.strategies.fixed_percentage_exit import \
     FixedPercentageExitStrategy
 
 
-class TestFixedPercentageExitStrategy(unittest.TestCase):
+class TestFixedPercentageExitStrategy(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         # Define mock strategy settings
@@ -44,46 +44,46 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         self.patcher_order_builder.stop()
         self.patcher_one_cancels_other.stop()
 
-    def test_should_exit_take_profit(self):
+    async def test_should_exit_take_profit(self):
         additional_params = {
             'last_price': 110.0,
             'entry_price': 100.0
         }
 
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         
         self.assertTrue(result['exit'])
         self.assertEqual(result['take_profit_price'], 110.0)
         self.assertEqual(result['stop_loss_price'], 95.0)
         self.assertEqual(result['reason'], 'OCO')
 
-    def test_should_exit_stop_loss(self):
+    async def test_should_exit_stop_loss(self):
         additional_params = {
             'last_price': 95.0,
             'entry_price': 100.0
         }
 
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         
         self.assertTrue(result['exit'])
         self.assertEqual(result['take_profit_price'], 110.0)
         self.assertEqual(result['stop_loss_price'], 95.0)
         self.assertEqual(result['reason'], 'OCO')
 
-    def test_should_not_exit(self):
+    async def test_should_not_exit(self):
         additional_params = {
             'last_price': 98.0,
             'entry_price': 100.0
         }
 
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         
         self.assertFalse(result['exit'])
         self.assertEqual(result['take_profit_price'], 110.0)
         self.assertEqual(result['stop_loss_price'], 95.0)
         self.assertEqual(result['reason'], 'OCO')
 
-    def test_create_exit_order_builds_oco_order_equity(self):
+    async def test_create_exit_order_builds_oco_order_equity(self):
         # Set up the exit result with additional_params
         exit_result = {
             "take_profit_price": 110.0,
@@ -97,7 +97,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         }
 
         # Mock the instruction for the side
-        self.exit_strategy.get_instruction_for_side = MagicMock(return_value=EquityInstruction.SELL)
+        self.exit_strategy.get_instruction_for_side = AsyncMock(return_value=EquityInstruction.SELL)
 
         # Mock the build method's return value
         self.mock_order_builder_instance.build.return_value = {
@@ -121,7 +121,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         }
 
         # Call create_exit_order
-        result_order = self.exit_strategy.create_exit_order(exit_result)
+        result_order = await self.exit_strategy.create_exit_order(exit_result)
 
         # Assert that the order builder was instantiated
         self.mock_order_builder_cls.assert_called()
@@ -157,7 +157,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         self.assertEqual(result_order, expected_order)
 
 
-    def test_create_exit_order_builds_oco_order_option(self):
+    async def test_create_exit_order_builds_oco_order_option(self):
         # Set up the exit result with additional_params
         exit_result = {
             "take_profit_price": 110.0,
@@ -172,7 +172,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         }
 
         # Mock the instruction for the side
-        self.exit_strategy.get_instruction_for_side = MagicMock(return_value='SELL')
+        self.exit_strategy.get_instruction_for_side = AsyncMock(return_value='SELL')
 
         # Mock the build method's return value for take profit order
         self.mock_order_builder_instance.build.side_effect = [
@@ -207,7 +207,7 @@ class TestFixedPercentageExitStrategy(unittest.TestCase):
         }
 
         # Call create_exit_order
-        result_order = self.exit_strategy.create_exit_order(exit_result)
+        result_order = await self.exit_strategy.create_exit_order(exit_result)
 
         # Assert that the order builder was instantiated
         self.mock_order_builder_cls.assert_called()

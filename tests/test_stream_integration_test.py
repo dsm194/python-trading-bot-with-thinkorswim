@@ -3,7 +3,6 @@ import random
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import websockets
 
 from mock_objects.mock_streaming_server import MockStreamingServer

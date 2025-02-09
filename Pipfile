@@ -27,9 +27,12 @@ protobuf = "==5.28.2"
 schwab-py = "==1.4.0"
 pip = "*"
 pyjwt = "*"
-motor = "<4.0,>=3.0"
 pandas-market-calendars = "*"
 zstandard = "*"
+motor = {extras = ["aws", "srv", "snappy", "ocsp", "zstd", "gssapi", "encryption"] }
+setuptools = "*"
+numpy = "*"
+pandas-ta = "*"
 
 [requires]
 python_version = "3.8"

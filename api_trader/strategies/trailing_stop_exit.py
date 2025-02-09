@@ -3,6 +3,7 @@ from schwab.orders.common import (Duration, OrderStrategyType, OrderType,
                                   StopPriceLinkType)
 from schwab.orders.generic import OrderBuilder
 
+from api_trader.asset_type import AssetType
 from api_trader.strategies.exit_strategy import ExitStrategy
 
 
@@ -12,7 +13,7 @@ class TrailingStopExitStrategy(ExitStrategy):
         super().__init__(strategy_settings)
         self.order_builder_cls = order_builder_cls
 
-    def should_exit(self, additional_params):
+    async def should_exit(self, additional_params):
 
         last_price = additional_params.get('last_price')
         if last_price is None:
@@ -42,8 +43,7 @@ class TrailingStopExitStrategy(ExitStrategy):
         }
 
 
-    def create_exit_order(self, exit_result):
-        from api_trader.order_builder import AssetType
+    async def create_exit_order(self, exit_result):
         """
         Builds a single trailing stop order.
         """
@@ -57,7 +57,7 @@ class TrailingStopExitStrategy(ExitStrategy):
         assetType = additional_params['assetType']
 
         # Determine the instruction (inverse of the side)
-        instruction = self.get_instruction_for_side(assetType, side)
+        instruction = await self.get_instruction_for_side(assetType, side)
 
         # Create trailing stop order
         trailing_stop_order_builder = self.order_builder_cls()

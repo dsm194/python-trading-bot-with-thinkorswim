@@ -3,6 +3,7 @@ import os
 import random
 import string
 import unittest
+from datetime import datetime, timedelta
 from unittest import mock
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -1188,7 +1189,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "additional_params": {"ATR": 2.5, "max_price": 180.00},
             "reason": "OCO"
         }
-        mock_exit_strategy.return_value.should_exit.return_value = mock_exit_response
+        mock_exit_strategy.return_value.should_exit = AsyncMock(return_value=mock_exit_response)
 
         # Run the method to test
         await api_trader.checkOCOpapertriggers()
@@ -1903,7 +1904,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                 }
 
                 # Simulate the strategy logic based on the price
-                exit_result = strategy.should_exit(additional_params)
+                exit_result = await strategy.should_exit(additional_params)
                 should_exit = exit_result['exit']
 
                 if should_exit:
@@ -1947,7 +1948,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                         "side": position["Side"],
                         "assetType": position["Asset_Type"],
                     }
-                    trailing_stop_result = trailing_stop_strategy.should_exit(additional_params)
+                    trailing_stop_result = await trailing_stop_strategy.should_exit(additional_params)
 
                     # Capture the updated trailing stop price from the result
                     trailing_stop_price = trailing_stop_result.get("trailing_stop_price")
@@ -1963,7 +1964,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
 
 def create_mock_open_positions(num_positions):
-    from datetime import datetime, timedelta
 
     base_date = datetime.now()  # Get the current date and time
     return [

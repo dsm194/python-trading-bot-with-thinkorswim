@@ -756,7 +756,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         mock_standard_order.return_value = (parent_order_mock, obj_mock)
 
         # Mock return value for load_strategy
-        strategy = MagicMock()
+        strategy = AsyncMock()
         exit_order_mock = MagicMock()  # Mock the exit order
         strategy.apply_exit_strategy.return_value = exit_order_mock
         mock_load_strategy.return_value = strategy

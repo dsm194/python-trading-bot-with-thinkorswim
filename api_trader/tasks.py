@@ -237,6 +237,7 @@ class Tasks:
 
             # Prepare additional params for exit strategy
             additional_params = {
+                "symbol": symbol,
                 "entry_price": position["Entry_Price"],
                 "quantity": position["Qty"],
                 "last_price": last_price,
@@ -244,7 +245,7 @@ class Tasks:
             }
 
             # Check if the exit conditions are met
-            exit_result = exit_strategy.should_exit(additional_params)
+            exit_result = await exit_strategy.should_exit(additional_params)
             should_exit = exit_result['exit']
             updated_max_price = exit_result["additional_params"]["max_price"]
 

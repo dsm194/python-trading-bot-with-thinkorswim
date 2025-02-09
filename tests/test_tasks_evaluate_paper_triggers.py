@@ -43,7 +43,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     async def test_evaluate_paper_triggers_retrieves_correct_strategy(self):
         # Mock quote data
         quote_data = {"last_price": 130, "regular_market_last_price": 125}
-        exit_result = MagicMock()
+        exit_result = AsyncMock()
         exit_result.should_exit.return_value = {
             "exit": False,
             "additional_params": {"max_price": 120.0}
@@ -84,7 +84,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         self.tasks._cached_market_hours = {"isOpen": True}
         
         # Prepare the strategy data with an ExitStrategy mock
-        mock_exit_strategy = MagicMock()
+        mock_exit_strategy = AsyncMock()
         mock_exit_strategy.should_exit.return_value = {
             "exit": False,
             "additional_params": {"max_price": 120.0}
@@ -98,6 +98,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
 
         # Verify last_price was used when market is open
         mock_exit_strategy.should_exit.assert_called_once_with({
+            "symbol": "SYM1",
             "entry_price": 100.00,
             "quantity": 10,
             "last_price": 130,
@@ -111,7 +112,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         self.tasks._cached_market_hours = {"isOpen": False}
         
         # Prepare the strategy data with an ExitStrategy mock
-        mock_exit_strategy = MagicMock()
+        mock_exit_strategy = AsyncMock()
         mock_exit_strategy.should_exit.return_value = {
             "exit": False,
             "additional_params": {"max_price": 120.0}
@@ -125,6 +126,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
 
         # Verify regular_market_last_price was used when market is closed
         mock_exit_strategy.should_exit.assert_called_once_with({
+            "symbol": "SYM1",
             "entry_price": 100.00,
             "quantity": 10,
             "last_price": 125,
@@ -134,10 +136,10 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
 
     async def test_evaluate_paper_triggers_updates_max_price(self):
         # Mock should_exit to return a new max_price
-        self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"].should_exit.return_value = {
+        self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"].should_exit = AsyncMock(return_value = {
             "exit": False,
             "additional_params": {"max_price": 135.0}
-        }
+        })
 
         await self.tasks.evaluate_paper_triggers("SYM1", {"last_price": 130, "regular_market_last_price": 125})
 
@@ -146,10 +148,10 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
 
     async def test_evaluate_paper_triggers_triggers_exit(self):
         # Mock should_exit to indicate exit
-        self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"].should_exit.return_value = {
+        self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"].should_exit = AsyncMock(return_value = {
             "exit": True,
             "additional_params": {"max_price": 135.0}
-        }
+        })
 
         await self.tasks.evaluate_paper_triggers("SYM1", {"last_price": 130, "regular_market_last_price": 125})
 

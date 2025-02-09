@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from schwab.orders.common import (Duration, EquityInstruction,
                                   OptionInstruction, OrderStrategyType,
@@ -11,7 +11,7 @@ from api_trader.strategies.trailing_stop_exit import TrailingStopExitStrategy
 
 
 # A concrete subclass for testing purposes (since ExitStrategy is abstract)
-class TestTrailingStopExitStrategy(unittest.TestCase):
+class TestTrailingStopExitStrategy(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
 
@@ -26,7 +26,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         # Instantiate TrailingStopExitStrategy with mocked strategy settings
         self.exit_strategy = TrailingStopExitStrategy(self.strategy_settings, self.order_builder_cls)
 
-    def test_should_exit_updates_max_price_and_calculates_trailing_stop(self):
+    async def test_should_exit_updates_max_price_and_calculates_trailing_stop(self):
         # Set up additional_params with trade details
         additional_params = {
             "last_price": 150.0,
@@ -39,7 +39,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Call should_exit to test updating max_price and trailing stop calculation
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
 
         # Check that max_price is updated to the higher last_price
         self.assertEqual(result["additional_params"]["max_price"], 150.0)
@@ -51,7 +51,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         # Check that the exit condition is false because the last price is still above the trailing stop
         self.assertFalse(result["exit"])
 
-    def test_should_exit_triggers_exit_when_price_below_trailing_stop(self):
+    async def test_should_exit_triggers_exit_when_price_below_trailing_stop(self):
         # Set up additional_params with a last price below the trailing stop
         additional_params = {
             "last_price": 130.0,  # price below the trailing stop
@@ -64,7 +64,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Call should_exit to check if it triggers an exit
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
 
         # Calculate expected trailing stop price (90% of max_price due to 10% trailing stop)
         expected_trailing_stop_price = 150.0 * (1 - 0.1)
@@ -73,7 +73,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         # Check that the exit condition is true because the last price is below the trailing stop
         self.assertTrue(result["exit"])
 
-    def test_create_exit_order_builds_trailing_stop_order(self):
+    async def test_create_exit_order_builds_trailing_stop_order(self):
         exit_result = {
             "trailing_stop_price": 135.0,
             "additional_params": {
@@ -84,7 +84,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
             }
         }
 
-        self.exit_strategy.get_instruction_for_side = MagicMock(return_value=EquityInstruction.SELL)
+        self.exit_strategy.get_instruction_for_side = AsyncMock(return_value=EquityInstruction.SELL)
         self.order_builder_instance.build.return_value = {
             'session': 'NORMAL',
             'duration': 'GOOD_TILL_CANCEL',
@@ -96,7 +96,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
             'orderStrategyType': 'SINGLE'
         }
 
-        result_order = self.exit_strategy.create_exit_order(exit_result)
+        result_order = await self.exit_strategy.create_exit_order(exit_result)
 
         self.order_builder_cls.assert_called_once()
         self.order_builder_instance.set_order_type.assert_called_once_with(OrderType.TRAILING_STOP)
@@ -127,7 +127,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         self.assertEqual(result_order, expected_order)
 
 
-    def test_create_exit_order_with_non_equity_asset(self):
+    async def test_create_exit_order_with_non_equity_asset(self):
         # Set up the exit result with additional_params
         exit_result = {
             "trailing_stop_price": 135.0,
@@ -141,7 +141,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Mock the instruction for the side
-        self.exit_strategy.get_instruction_for_side = MagicMock(return_value=OptionInstruction.SELL_TO_CLOSE)
+        self.exit_strategy.get_instruction_for_side = AsyncMock(return_value=OptionInstruction.SELL_TO_CLOSE)
 
         # Mock the build method's return value
         self.order_builder_instance.build.return_value = {
@@ -156,7 +156,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Call create_exit_order
-        result_order = self.exit_strategy.create_exit_order(exit_result)
+        result_order = await self.exit_strategy.create_exit_order(exit_result)
 
         # Assert that the order builder was instantiated
         self.order_builder_cls.assert_called_once()
@@ -193,7 +193,7 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         self.assertEqual(result_order, expected_order)
 
     
-    def test_should_exit(self):
+    async def test_should_exit(self):
         # Mock additional params
         additional_params = {
             'last_price': 100,
@@ -202,21 +202,21 @@ class TestTrailingStopExitStrategy(unittest.TestCase):
         }
 
         # Test that it should exit if the last_price drops below the trailing stop price
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         self.assertFalse(result['exit'])  # No exit yet
 
         additional_params['last_price'] = 99  # Price drops
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         self.assertTrue(result['exit'])  # Now we should exit
 
-    def test_should_exit_updates_max_price(self):
+    async def test_should_exit_updates_max_price(self):
         additional_params = {
             'last_price': 110,
             'max_price': 105,
             "entry_price": 101,
         }
         # Test that the max price updates if the last price goes higher
-        result = self.exit_strategy.should_exit(additional_params)
+        result = await self.exit_strategy.should_exit(additional_params)
         self.assertEqual(result['additional_params']['max_price'], 110)
 
 if __name__ == '__main__':

@@ -769,3 +769,35 @@ class TDAmeritrade:
                 return None
         else:
             return
+
+    async def get_price_history_every_day(
+            self, symbol, *, start_datetime=None, end_datetime=None, 
+            need_extended_hours_data=None, need_previous_close=None):
+        
+        isValid = await self.checkTokenValidityAsync()
+
+        if isValid:
+            try:
+                 # Collect all keyword arguments
+                kwargs = {
+                    "start_datetime": start_datetime,
+                    "end_datetime": end_datetime,
+                    "need_extended_hours_data": need_extended_hours_data,
+                    "need_previous_close": need_previous_close
+                }
+
+                response = await self.async_client.get_price_history_every_day(symbol, **kwargs)
+
+                # Check if the response status is not 200
+                if response.status_code != 200:
+                    self.logger.error(f"Failed to retrieve price history for: {symbol}. HTTP Status: {response.status_code}")
+                    return None
+                
+                # Parse the JSON only if it's a successful response
+                return response.json()
+                
+            except Exception as e:
+                self.logger.error(f"An error occurred while retrieving price history for: {symbol}. Error: {e}")
+                return None
+        else:
+            return

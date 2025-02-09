@@ -10,7 +10,8 @@ from schwab.orders.equities import equity_buy_limit, equity_sell_limit
 from schwab.orders.options import (option_buy_to_open_limit,
                                    option_sell_to_close_limit)
 
-from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
+from api_trader.asset_type import AssetType
+from api_trader.strategies import atr_exit, fixed_percentage_exit, trailing_stop_exit
 from assets.helper_functions import getUTCDatetime
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -25,10 +26,6 @@ SELL_PRICE = os.getenv('SELL_PRICE')
 # Access the JSON blob and parse it into a dictionary
 default_strategy_settings = json.loads(os.getenv("DEFAULT_STRATEGY_SETTINGS"))
 
-# Define the AssetType enum manually
-class AssetType:
-    EQUITY = "EQUITY"
-    OPTION = "OPTION"
 
 class OrderBuilderWrapper:
 
@@ -128,7 +125,7 @@ class OrderBuilderWrapper:
                 # If the string cannot be parsed, reset to an empty dictionary
                 settings = {}
 
-        recognized_strategies = ('FixedPercentageExit', 'TrailingStopExit')
+        recognized_strategies = ('FixedPercentageExit', 'TrailingStopExit', 'ATRExit')
         # If the strategy_type is not recognized, default to 'FixedPercentageExit'
         if strategy_type not in recognized_strategies:
             strategy_type = 'FixedPercentageExit'
@@ -147,10 +144,9 @@ class OrderBuilderWrapper:
             return fixed_percentage_exit.FixedPercentageExitStrategy(settings[strategy_type])
         elif strategy_type == 'TrailingStopExit':
             return trailing_stop_exit.TrailingStopExitStrategy(settings[strategy_type])
-        # elif strategy_type == 'ATRExit':
-        #     return atr_exit.ATRExitStrategy(settings[strategy_type])
+        elif strategy_type == 'ATRExit':
+            return atr_exit.ATRExitStrategy(settings[strategy_type], self.tdameritrade)
         # Add other strategy types as needed
-
 
     async def standardOrder(self, trade_data, strategy_object, direction, user, account_id, OCOorder=False):
 
@@ -279,7 +275,7 @@ class OrderBuilderWrapper:
         # Check if parent_order is None
         if order is not None:
             if direction == "OPEN POSITION":
-                exit_order = strategy.apply_exit_strategy(obj)
+                exit_order = await strategy.apply_exit_strategy(obj)
 
                 order = first_triggers_second(order, exit_order)
 

@@ -2,16 +2,17 @@ from schwab.orders.common import (Duration, OrderStrategyType, OrderType,
                                   Session, one_cancels_other)
 from schwab.orders.generic import OrderBuilder
 
+from api_trader.asset_type import AssetType
 from api_trader.strategies.exit_strategy import ExitStrategy
-
+from api_trader.strategies.strategy_settings import StrategySettings
 
 class FixedPercentageExitStrategy(ExitStrategy):
 
-    def __init__(self, strategy_settings, order_builder_cls=OrderBuilder):
+    def __init__(self, strategy_settings: StrategySettings, order_builder_cls=OrderBuilder):
         super().__init__(strategy_settings)
         self.order_builder_cls = order_builder_cls
 
-    def should_exit(self, additional_params):
+    async def should_exit(self, additional_params):
         
         last_price = additional_params.get('last_price')
         if last_price is None:
@@ -34,9 +35,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
             "reason": "OCO"
         }
 
-    def create_exit_order(self, exit_result):
-        from api_trader.order_builder import AssetType
-
+    async def create_exit_order(self, exit_result):
         """
         Builds an OCO (One-Cancels-Other) order with both take-profit and stop-loss.
         """
@@ -55,7 +54,7 @@ class FixedPercentageExitStrategy(ExitStrategy):
         stop_loss_price = round(stop_loss_price, 2) if stop_loss_price >= 1 else round(stop_loss_price, 4)
 
         # Determine the instruction (inverse of the side)
-        instruction = self.get_instruction_for_side(assetType, side)
+        instruction = await self.get_instruction_for_side(assetType, side)
 
         # Create take profit order
         take_profit_order_builder = self.order_builder_cls()
