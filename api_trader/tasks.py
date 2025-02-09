@@ -9,6 +9,8 @@ import httpx
 from dotenv import load_dotenv
 from pymongo import UpdateOne
 
+from api_trader.position_updater import PositionUpdater
+from api_trader.quote_manager import QuoteManager
 from assets.exception_handler import exception_handler
 from assets.helper_functions import (getUTCDatetime, modifiedAccountID,
                                      selectSleep)
@@ -27,7 +29,7 @@ class Tasks:
     # YOU CAN CREATE WHATEVER TASKS YOU WANT FOR THE BOT.
     # YOU CAN USE THE DISCORD CHANNEL NAMED TASKS IF YOU ANY HELP.
 
-    def __init__(self, quote_manager, position_updater):
+    def __init__(self, quote_manager: QuoteManager, position_updater: PositionUpdater):
 
         self.quote_manager = quote_manager
         self.position_updater = position_updater
@@ -284,7 +286,6 @@ class Tasks:
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop
         self.position_updater.stop()
-        self.thread.join()  # Wait for the thread to finish
 
     @exception_handler
     async def checkOCOtriggers(self):

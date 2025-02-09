@@ -41,6 +41,10 @@ class MockStreamingServer:
             print("❌ [MOCK TDA] Subscription was cancelled, but we completed `sleep` first!")
             raise
 
+    async def level_one_option_add(self, symbols, fields):
+        """Mocks adding options symbols to the quote stream."""
+        await self.level_one_equity_add(symbols, fields)
+
     async def level_one_equity_unsubs(self, symbols):
         """Mocks unsubscribing from equity symbols."""
         for symbol in symbols:
@@ -48,6 +52,10 @@ class MockStreamingServer:
 
         # print(f"🚫 [MOCK TDA] Unsubscribed from {len(symbols)} symbols: {symbols}")
         await asyncio.sleep(0.1)  # ✅ Simulate API delay
+
+    async def level_one_option_unsubs(self, symbols):
+        """Mocks unsubscribing from equity symbols."""
+        await self.level_one_equity_unsubs(symbols)
 
     async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None):
         """Mocks the behavior of `tdameritrade.start_stream()` to integrate with QuoteManager."""
