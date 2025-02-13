@@ -158,10 +158,7 @@ class QuoteManager:
 
     async def _start_quotes_stream(self, symbols):
         try:
-            async with self.lock:
-                # Update subscribed symbols with the new structure
-                for entry in symbols:
-                    self.subscribed_symbols[entry["symbol"]] = entry
+            self.stream_initialized.clear()
 
             # Pass stream_initialized to TdAmeritrade.start_stream and run as a background task
             self.stream_task = asyncio.create_task(
@@ -174,6 +171,10 @@ class QuoteManager:
                     reset_event=self.reset_event,
                 )
             )
+
+            # Wait for stream initialization to confirm that streaming started successfully
+            await self.stream_initialized.wait()
+            self.logger.info(f"[QUOTE MANAGER] Streaming successfully started for symbols: {symbols}")
         except Exception as e:
             self.logger.error(f"Failed to start stream: {e}")
             raise

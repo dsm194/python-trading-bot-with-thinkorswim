@@ -110,8 +110,19 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
         """Test starting the quotes stream."""
         symbols = [{"symbol": "AAPL", "asset_type": "EQUITY"}]
 
-        with patch.object(self.tdameritrade_mock, 'start_stream', AsyncMock()) as mock_start_stream:
+        async def mock_start_stream(*args, **kwargs):
+            """Mocked start_stream method that simulates successful stream initialization."""
+            await asyncio.sleep(0.1)  # Simulate a small delay before stream initializes
+            self.quote_manager.stream_initialized.set()  # Manually signal stream start
+
+        # Ensure `is_streaming` is False so `_start_quotes_stream` actually runs
+        self.quote_manager.is_streaming = False
+
+        # Patch `tdameritrade.start_stream` properly
+        with patch.object(self.quote_manager.tdameritrade, 'start_stream', new=AsyncMock(side_effect=mock_start_stream)) as mock_start_stream:
             await self.quote_manager._start_quotes_stream(symbols)
+
+            # Ensure `start_stream` was called once with the correct parameters
             mock_start_stream.assert_called_once_with(
                 symbols,
                 quote_handler=self.quote_manager.quote_handler,
@@ -136,23 +147,30 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
         # Generate 10 random stock symbols for testing
         symbols = [{"symbol": ''.join(random.choices(string.ascii_uppercase, k=4))} for _ in range(10)]
 
-        async def add_quotes_task():
-            """Simulates concurrent calls to add_quotes."""
-            await self.quote_manager.add_quotes(symbols)
+        async def mock_start_stream(*args, **kwargs):
+            """Mocked start_stream method that simulates successful stream start."""
+            await asyncio.sleep(0.1)  # Simulate a small delay before stream initializes
+            self.quote_manager.stream_initialized.set()  # ✅ Manually signal that the stream started
 
-        # Launch multiple concurrent `add_quotes` calls
-        tasks = [asyncio.create_task(add_quotes_task()) for _ in range(5)]
-        await asyncio.gather(*tasks)
+        # ✅ Patch `start_stream` to use the mock implementation
+        with patch.object(self.quote_manager.tdameritrade, 'start_stream', mock_start_stream):
+            async def add_quotes_task():
+                """Simulates concurrent calls to add_quotes."""
+                await self.quote_manager.add_quotes(symbols)
 
-        # Verify that each symbol appears only once in subscribed_symbols
-        async with self.quote_manager.lock:
-            subscribed_keys = list(self.quote_manager.subscribed_symbols.keys())
+            # Launch multiple concurrent `add_quotes` calls
+            tasks = [asyncio.create_task(add_quotes_task()) for _ in range(5)]
+            await asyncio.gather(*tasks)
 
-        # Log for debugging
-        self.logger_mock.info(f"Final subscribed symbols: {subscribed_keys}")
+            # Verify that each symbol appears only once in subscribed_symbols
+            async with self.quote_manager.lock:
+                subscribed_keys = list(self.quote_manager.subscribed_symbols.keys())
 
-        # Assertion: No duplicates in subscribed_symbols
-        self.assertEqual(len(subscribed_keys), len(set(subscribed_keys)), "Duplicate symbols detected in subscribed_symbols!")
+            # Log for debugging
+            self.logger_mock.info(f"Final subscribed symbols: {subscribed_keys}")
+
+            # Assertion: No duplicates in subscribed_symbols
+            self.assertEqual(len(subscribed_keys), len(set(subscribed_keys)), "Duplicate symbols detected in subscribed_symbols!")
 
     async def test_concurrent_add_quotes_two(self):
         """Test that concurrent calls to add_quotes do not result in duplicate subscriptions."""
