@@ -252,7 +252,7 @@ class Tasks:
             current_max_price = position.get("Max_Price")
             if current_max_price is None or updated_max_price > current_max_price:
                 await self.position_updater.queue_max_price_update(position["_id"], updated_max_price)
-                self.logger.info(f"Updated max_price for {symbol} to {updated_max_price}")
+                self.logger.info(f"Updated max_price for {symbol} ({position["_id"]}) to {updated_max_price}")
                 position["Max_Price"] = updated_max_price
 
             if should_exit:

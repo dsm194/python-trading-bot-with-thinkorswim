@@ -237,7 +237,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                         }
                         data_integrity = "Assumed" if self.RUN_LIVE_TRADER else "Reliable"
 
-                        self.logger.warning(f"Order ID not found. Moving {queue_order['Symbol']} to positions.")
+                        self.logger.debug(f"Order ID not found. Moving {queue_order['Symbol']} ({queue_order["_id"]}) to positions.")
                         await self.pushOrder(queue_order, custom, data_integrity)
                         return
 

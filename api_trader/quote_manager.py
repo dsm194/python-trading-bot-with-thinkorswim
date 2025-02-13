@@ -32,7 +32,6 @@ class QuoteManager:
         self.debounce_task = asyncio.create_task(self._process_debounce_cache())
         self.reset_task = asyncio.create_task(self._listen_for_resets())
         self.stop_lock = asyncio.Lock()
-        self.is_streaming = False
 
         assert asyncio.get_event_loop() == self.loop, "QuoteManager is not created with the expected event loop"
 
@@ -158,12 +157,6 @@ class QuoteManager:
                 self.stream_initialized.clear()
 
     async def _start_quotes_stream(self, symbols):
-        async with self.stream_lock:  # Prevent overlapping calls
-            if self.is_streaming:
-                return  # Already streaming, no action needed
-
-            self.is_streaming = True  # Set state to streaming to prevent race
-
         try:
             async with self.lock:
                 # Update subscribed symbols with the new structure
@@ -183,8 +176,6 @@ class QuoteManager:
             )
         except Exception as e:
             self.logger.error(f"Failed to start stream: {e}")
-            # Reset state on failure (note that `is_streaming` is already protected by the lock)
-            self.is_streaming = False
             raise
 
     async def _update_stream_subscription(self, symbols_to_update):
@@ -197,12 +188,8 @@ class QuoteManager:
         await self.stream_initialized.wait()
         self.logger.debug(f"[QUOTE MANAGER] Stream initialized. Proceeding with subscription update.")
 
-        # ✅ Now update `subscribed_symbols` safely in a separate step
-        async with self.lock:
-            for entry in symbols_to_update:
-                self.subscribed_symbols[entry["symbol"]] = entry
 
-        # ✅ Call update_subscription() *after* releasing all locks
+        # Call update_subscription() *after* releasing all locks
         try:
             self.logger.debug(f"[QUOTE MANAGER] Calling update_subscription() with {symbols_to_update}")
 
@@ -216,32 +203,59 @@ class QuoteManager:
         except Exception as e:
             self.logger.error(f"[QUOTE MANAGER] Failed to update stream subscription: {e}")
             
-            # ✅ Rollback added symbols *outside* the lock
-            async with self.lock:
-                for s in symbols_to_update:
-                    self.subscribed_symbols.pop(s["symbol"], None)  # Remove key, ignore if not found
             raise
 
     async def add_quotes(self, symbols, batch_size=10):
         async with self.lock:
-            # Extract symbols and filter out already subscribed ones
+            # Extract only new symbols that are NOT in `self.subscribed_symbols`
             new_symbols = [s for s in symbols if s["symbol"] not in self.subscribed_symbols]
 
-        if new_symbols:
-            try:
-                # Process all batches, including the first batch
-                for i in range(0, len(new_symbols), batch_size):
-                    batch = new_symbols[i:i + batch_size]
-                    if not self.is_streaming and i == 0:
-                        # Start the stream with the first batch
-                        await self._start_quotes_stream(batch)
-                    else:
-                        # Update the subscription for each batch
-                        await self._update_stream_subscription(batch)
-                        self.logger.info(f"Updated stream subscription with batch of {len(batch)} symbols.")
-            except Exception as e:
-                self.logger.error(f"Failed to process batch: {e}")
-                raise
+            if not new_symbols:
+                self.logger.debug("[QUOTE MANAGER] No new symbols to process. Skipping update.")
+                return  # Nothing new to process
+
+            self.logger.debug(f"[QUOTE MANAGER] New symbols detected: {new_symbols}")
+
+            # Reserve all new symbols *before* releasing the lock to prevent race conditions
+            for s in new_symbols:
+                self.subscribed_symbols[s["symbol"]] = s
+
+            start_stream = not self.is_streaming
+            if start_stream:
+                self.is_streaming = True  # Mark as streaming before starting
+
+            # Split into batches
+            first_batch = new_symbols[:batch_size]
+            remaining_batches = new_symbols[batch_size:]
+
+        try:
+            if start_stream:
+                self.logger.debug(f"Calling `_start_quotes_stream` with: {first_batch}")
+                await self._start_quotes_stream(first_batch)  # Start streaming with the first batch
+            else:
+                self.logger.debug(f"Streaming is already active. Calling `_update_stream_subscription` with: {first_batch}")
+                await self._update_stream_subscription(first_batch)  # Ensure first batch is processed
+
+            # Process remaining batches using `_update_stream_subscription`
+            for i in range(0, len(remaining_batches), batch_size):
+                batch = remaining_batches[i:i + batch_size]
+                self.logger.debug(f"Calling `_update_stream_subscription` with: {batch}")
+                await self._update_stream_subscription(batch)
+
+            self.logger.info(f"Successfully updated stream subscription with {len(new_symbols)} symbols.")
+        except Exception as e:
+            self.logger.error(f"Failed to process batch: {e}")
+
+            # Rollback `is_streaming` if we had set it to `True` but the stream failed
+            if start_stream:
+                self.is_streaming = False
+
+            # Rollback failed symbols
+            async with self.lock:
+                for s in new_symbols:
+                    self.subscribed_symbols.pop(s["symbol"], None)
+
+            raise
 
     async def unsubscribe(self, symbols):
         """Unsubscribes a list of symbols from streaming and removes them from subscribed_symbols."""
@@ -249,7 +263,7 @@ class QuoteManager:
         symbols_to_unsubscribe = []
 
         async with self.lock:
-            # ✅ First, copy the structures BEFORE removing from self.subscribed_symbols
+            # First, copy the structures BEFORE removing from self.subscribed_symbols
             symbols_to_unsubscribe = [
                 self.subscribed_symbols[symbol]
                 for symbol in symbols if symbol in self.subscribed_symbols
@@ -258,10 +272,10 @@ class QuoteManager:
         if symbols_to_unsubscribe:
             self.logger.info(f"[QUOTE MANAGER] Unsubscribing from {symbols_to_unsubscribe}.")
 
-            # ✅ Call API first before removing from tracking list
+            # Call API first before removing from tracking list
             await self._unsubscribe_from_stream(symbols_to_unsubscribe)
 
-            # ✅ Only remove AFTER successful API call
+            # Only remove AFTER successful API call
             async with self.lock:
                 for entry in symbols_to_unsubscribe:
                     self.subscribed_symbols.pop(entry["symbol"], None)
@@ -273,7 +287,7 @@ class QuoteManager:
         """Sends an unsubscribe request for a batch of symbols to the streaming API."""
         try:
             if structured_symbols:
-                await self.tdameritrade.unsubscribe_symbols(structured_symbols)  # ✅ Call API with correct format
+                await self.tdameritrade.unsubscribe_symbols(structured_symbols)  # Call API with correct format
                 self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {structured_symbols}.")
             else:
                 self.logger.warning(f"[QUOTE MANAGER] No valid structures found for unsubscribe.")

@@ -490,7 +490,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Setup dependencies
         user = MagicMock()
-        mongo = MagicMock()
         async_mongo = AsyncMock()
         push = MagicMock()
         logger = MagicMock()
@@ -523,6 +522,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_queue_cursor = AsyncMock()
         mock_queue_cursor.to_list = AsyncMock(return_value=[
             {
+                "_id": "1234567890",
                 "Symbol": "AAPL",
                 "Order_ID": "12345",
                 "Order_Type": "STANDARD",
@@ -544,6 +544,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Assert pushOrder was called with "Reliable" data integrity
         mock_pushOrder.assert_called_once_with(
             {
+                "_id": "1234567890",
                 "Symbol": "AAPL",
                 "Order_ID": "12345",
                 "Order_Type": "STANDARD",
@@ -561,8 +562,8 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         )
 
         # Verify logger warning was called instead, since the order wasn't found
-        expected_log_message_warning = "Order ID not found. Moving AAPL to positions."
-        api_trader.logger.warning.assert_any_call(expected_log_message_warning)
+        expected_log_message_debug = "Order ID not found. Moving AAPL (1234567890) to positions."
+        api_trader.logger.debug.assert_any_call(expected_log_message_debug)
 
     @patch.object(ApiTrader, 'pushOrder', return_value=None)
     async def test_update_status_canceled_rejected(self, mock_pushOrder):

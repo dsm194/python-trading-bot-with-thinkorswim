@@ -130,6 +130,52 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
             await self.quote_manager._update_stream_subscription(symbols)
             mock_update_subscription.assert_called_once_with(symbols)
 
+    async def test_concurrent_add_quotes(self):
+        """Test that concurrent calls to add_quotes do not result in duplicate subscriptions."""
+
+        # Generate 10 random stock symbols for testing
+        symbols = [{"symbol": ''.join(random.choices(string.ascii_uppercase, k=4))} for _ in range(10)]
+
+        async def add_quotes_task():
+            """Simulates concurrent calls to add_quotes."""
+            await self.quote_manager.add_quotes(symbols)
+
+        # Launch multiple concurrent `add_quotes` calls
+        tasks = [asyncio.create_task(add_quotes_task()) for _ in range(5)]
+        await asyncio.gather(*tasks)
+
+        # Verify that each symbol appears only once in subscribed_symbols
+        async with self.quote_manager.lock:
+            subscribed_keys = list(self.quote_manager.subscribed_symbols.keys())
+
+        # Log for debugging
+        self.logger_mock.info(f"Final subscribed symbols: {subscribed_keys}")
+
+        # Assertion: No duplicates in subscribed_symbols
+        self.assertEqual(len(subscribed_keys), len(set(subscribed_keys)), "Duplicate symbols detected in subscribed_symbols!")
+
+    async def test_concurrent_add_quotes_two(self):
+        """Test that concurrent calls to add_quotes do not result in duplicate subscriptions."""
+
+        # ✅ Generate more symbols than batch_size to force `_update_stream_subscription` to be needed
+        base_symbols = ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "NFLX", "META", "NVDA", "ADBE", "INTC",
+                        "PYPL", "CRM", "CSCO", "IBM", "ORCL", "UBER", "SPOT", "ZM", "SHOP", "SQ"]
+        
+        symbols_list = [{"symbol": s} for s in base_symbols]  # ✅ Send as a single batch!
+
+        with patch.object(self.quote_manager, '_start_quotes_stream') as mock_start_stream, \
+            patch.object(self.quote_manager, '_update_stream_subscription') as mock_update_subscription:
+
+            # ✅ Call `add_quotes` ONCE with all symbols instead of making separate calls per task
+            await self.quote_manager.add_quotes(symbols_list)
+
+            # ✅ `_start_quotes_stream` should be called exactly once
+            self.assertEqual(mock_start_stream.call_count, 1, f"Expected _start_quotes_stream to be called once, but was called {mock_start_stream.call_count} times.")
+
+            # ✅ `_update_stream_subscription` should be called for remaining symbols
+            self.assertGreater(mock_update_subscription.call_count, 0, "Expected _update_stream_subscription to be called after first start.")
+
+
     async def test_quote_streaming_and_unsubscribe(self):
         """Tests subscribing, receiving price updates, and unsubscribing using a mock stream."""
         
@@ -161,13 +207,14 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
             symbols,
             quote_handler=quote_callback,
             max_retries=5,
-            stop_event=asyncio.Event(),
-            initialized_event=asyncio.Event(),
-            reset_event=asyncio.Event(),
+            stop_event=self.quote_manager.stop_event,
+            initialized_event=self.quote_manager.stream_initialized,
+            reset_event=self.quote_manager.reset_event,
         ))
 
         # ✅ Subscribe to symbols
         await self.quote_manager.add_quotes(symbols)
+        
 
         # ✅ Allow some time for updates to arrive
         await asyncio.sleep(5)
