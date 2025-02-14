@@ -66,32 +66,40 @@ class QuoteManager:
             logger.error(f"Failed to extract underlying account ID: {e}")
             return None
 
-    # Define a handler for updating quotes as they stream
     async def quote_handler(self, quotes):
+        """Handles incoming quote updates and stores them in the cache efficiently."""
         self.logger.debug(f"Received quote: {quotes}")
 
-        # Extract the content property directly as a list of quotes
-        quote_list = quotes['content']
+        quote_list = quotes.get("content", [])
+        batch_updates = {}
 
+        # Process quotes in memory first (without locking)
         for quote in quote_list:
-            symbol = quote.get('key')
-            bid_price = quote.get('BID_PRICE')
-            ask_price = quote.get('ASK_PRICE')
-            last_price = quote.get('LAST_PRICE')
-            regular_market_last_price = quote.get('REGULAR_MARKET_LAST_PRICE') or quote.get('LAST_PRICE')
+            symbol = quote.get("key")
+            bid_price = quote.get("BID_PRICE")
+            ask_price = quote.get("ASK_PRICE")
+            last_price = quote.get("LAST_PRICE")
+            regular_market_last_price = quote.get("REGULAR_MARKET_LAST_PRICE") or quote.get("LAST_PRICE")
 
-            # Log or handle each quote as needed
-            self.logger.debug(f"Received quote for {symbol}: Bid Price: {bid_price}, Ask Price: {ask_price}, Last Price: {last_price}, Regular Market Last Price: {regular_market_last_price}")
+            batch_updates[symbol] = {
+                "bid_price": bid_price,
+                "ask_price": ask_price,
+                "last_price": last_price,
+                "regular_market_last_price": regular_market_last_price,
+            }
 
-            # Store the quotes in a dictionary
-            async with self.lock:
+        # Apply all updates at once after acquiring the lock
+        async with self.lock:
+            for symbol, updated_values in batch_updates.items():
                 cached_quote = self.quotes.get(symbol, {})
+
+                # Merge while preserving old values if new values are None
                 self.quotes[symbol] = {
-                    'bid_price': bid_price or cached_quote.get('bid_price'),
-                    'ask_price': ask_price or cached_quote.get('ask_price'),
-                    'last_price': last_price or cached_quote.get('last_price'),
-                    'regular_market_last_price': regular_market_last_price or cached_quote.get('regular_market_last_price'),
+                    key: updated_values.get(key, cached_quote.get(key)) if updated_values.get(key) is not None else cached_quote.get(key)
+                    for key in ["bid_price", "ask_price", "last_price", "regular_market_last_price"]
                 }
+
+                # Store updated quote in debounce cache for efficient processing
                 self.debounce_cache[symbol] = self.quotes[symbol]
 
         # Signal that new data is available safely
