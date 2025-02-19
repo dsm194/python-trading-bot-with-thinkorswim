@@ -8,7 +8,14 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.OrderBuilderWrapper.load_default_settings')
     def setUp(self, mock_load_default_settings):
-        self.wrapper = OrderBuilderWrapper()
+        self.api_trader = MagicMock()
+        self.logger = MagicMock()
+        self.user = MagicMock()
+        self.account_id = MagicMock()
+        self.async_mongo = MagicMock()
+        self.tdameritrade = MagicMock()
+        self.wrapper = OrderBuilderWrapper(self.logger, self.user, self.account_id, self.async_mongo, self.tdameritrade)
+
         # Mock strategy cache to avoid actual file I/O
         self.wrapper.strategy_cache = {}
         mock_load_default_settings.return_value = {'some_setting': 'value'}
@@ -23,7 +30,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         mock_construct_exit_strategy.return_value = MagicMock()
 
         strategy = self.wrapper.load_strategy(strategy_object)
-        
+
         # Check if the strategy is returned and cached
         self.assertIsNotNone(strategy)
         self.assertIn('FixedPercentageExit', self.wrapper.strategy_cache)
@@ -32,9 +39,9 @@ class TestOrderBuilderWrapper(unittest.TestCase):
     def test_construct_exit_strategy(self):
         # Create a mock for strategy settings
         mock_settings = {'FixedPercentageExit': {'percentage': 10}}
-        
+
         strategy_object = {'ExitStrategy': 'FixedPercentageExit', 'ExitStrategySettings': mock_settings}
-        
+
         with patch('api_trader.OrderBuilderWrapper._construct_exit_strategy', wraps=self.wrapper._construct_exit_strategy) as mock_construct:
             strategy = self.wrapper._construct_exit_strategy(strategy_object)
             self.assertIsInstance(strategy, fixed_percentage_exit.FixedPercentageExitStrategy)
@@ -58,7 +65,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             {"Symbol": "AAPL", "Strategy": "Strategy_A", "Qty": 10, "Entry_Price": 150.00},
             {"Symbol": "GOOG", "Strategy": "Strategy_A", "Qty": 5, "Entry_Price": 1000.00},
         ]
-        
+
         mock_queued_positions = [
             {"Symbol": "MSFT", "Strategy": "Strategy_A", "Qty": 2, "Entry_Price": 200.00},
         ]
@@ -79,7 +86,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         strategy = "Strategy_A"
         result = await self.api_trader.get_current_strategy_allocation(strategy, self.api_trader.user, self.api_trader.account_id)
 
-        # Expected result: 
+        # Expected result:
         # (10 * 150.00) + (5 * 1000.00) + (2 * 200.00) = 1500 + 5000 + 400 = 6900
         expected_allocation = 6900.00
 
@@ -343,7 +350,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
                 }
             }
         }
-        
+
         # Prepare mock data for the test
         trade_data = {
             "Symbol": "AAPL",
@@ -352,7 +359,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Qty": 100,
             "Position_Size": 1000
         }
-        
+
         strategy_object = {
             "ExitStrategy": "FixedPercentageExit",
             "ExitStrategySettings": {},  # Add appropriate settings if needed
@@ -361,7 +368,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Order_Type": "LIMIT",
             "Position_Type": "LONG"
         }
-        
+
          # Instantiate ApiTrader (which calls OrderBuilderWrapper.__init__)
         api_trader = ApiTrader()
         api_trader.user = MagicMock()
@@ -384,7 +391,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_standard_order_close_position(self, mock_init):
-        
+
         # Set up the mock behavior for tdameritrade.getQuote()
         mock_quote_response = {
             "AAPL": {
@@ -394,7 +401,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
                 }
             }
         }
-        
+
         trade_data = {
             'Symbol': 'AAPL',
             "Side": "SELL",
@@ -404,14 +411,14 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             'Entry_Date': '2024-09-07',
             'Position_Size': 1000
         }
-        
+
         strategy_object = {
             'Position_Size': 1000,
             'Order_Type': 'limit',
             'Position_Type': 'equity',
             'Active': True
         }
-        
+
         # Instantiate ApiTrader (which calls OrderBuilderWrapper.__init__)
         api_trader = ApiTrader()
         api_trader.user = MagicMock()
@@ -450,7 +457,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Qty": 10,
             "Position_Size": 1500
         }
-        
+
         # Mock strategy settings with a MaxPositionSize of $5000
         strategy_object = {
             "Position_Size": 1500,
@@ -474,10 +481,10 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
         # Call standardOrder method under test
         result = await api_trader.standardOrder(
-            trade_data, 
-            strategy_object, 
-            direction="OPEN POSITION", 
-            user=api_trader.user, 
+            trade_data,
+            strategy_object,
+            direction="OPEN POSITION",
+            user=api_trader.user,
             account_id=api_trader.account_id
         )
 
@@ -491,7 +498,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
         # Verify that tdameritrade.getQuoteAsync was called with the correct symbol
         api_trader.tdameritrade.getQuoteAsync.assert_awaited_once_with("AAPL")
-        
+
         # Adjusted assertion for get_current_strategy_allocation
         api_trader.get_current_strategy_allocation.assert_awaited_once_with(
             "FixedPercentageExit",  # Ensure keyword arguments are used
@@ -567,7 +574,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             user=api_trader.user,   # Keyword argument for user
             account_id=api_trader.account_id  # Keyword argument for account_id
         )
-    
+
     def test_order_processed_when_at_exact_max_position_size(self):
         asyncio.run(self.async_test_order_processed_when_at_exact_max_position_size())
 
@@ -659,7 +666,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Qty": 10,
             "Position_Size": 1500
         }
-        
+
         # Mock strategy settings, no max position size, so the order should always be processed
         strategy_object = {
             'Position_Size': 1500,
@@ -702,7 +709,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
                 }
             }
         }
-        
+
         # Prepare mock data for the test
         trade_data = {
             "Symbol": "AAPL",
@@ -711,7 +718,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Qty": 100,
             "Position_Size": 1000
         }
-        
+
         strategy_object = {
             "ExitStrategy": "FixedPercentageExit",
             "ExitStrategySettings": {},  # Add appropriate settings if needed
@@ -720,7 +727,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
             "Order_Type": "LIMIT",
             "Position_Type": "LONG"
         }
-        
+
          # Instantiate ApiTrader (which calls OrderBuilderWrapper.__init__)
         api_trader = ApiTrader()
         api_trader.user = MagicMock()
@@ -735,21 +742,21 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
         # Get the actual log message
         log_messages = [call[0][0] for call in api_trader.logger.error.call_args_list]
-        
+
         # Define the expected start of the message
         expected_start = "Price is zero for asset - cannot calculate shares:"
-        
+
         # Check that at least one log message starts with the expected string
         self.assertTrue(any(message.startswith(expected_start) for message in log_messages),
                         f"Expected log message starting with '{expected_start}' not found.")
 
-    def test_OCO_order(self):
-        asyncio.run(self.async_test_OCO_order())
+    def test_oco_order(self):
+        asyncio.run(self.async_test_oco_order())
 
     @patch('api_trader.OrderBuilderWrapper.standardOrder', new_callable=AsyncMock)
     @patch('api_trader.OrderBuilderWrapper.load_strategy', new_callable=MagicMock)
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
-    async def async_test_OCO_order(self, mock_init, mock_load_strategy, mock_standard_order):
+    async def async_test_oco_order(self, mock_init, mock_load_strategy, mock_standard_order):
         # Mock return value for standardOrder
         parent_order_mock = MagicMock()
         obj_mock = {"childOrderStrategies": []}
@@ -812,7 +819,7 @@ class TestOrderBuilderWrapper(unittest.TestCase):
                 "trailing_stop_percentage": 0.05
             }
         }
-        
+
         strategy_object = {'ExitStrategy': 'TrailingStopExit', 'ExitStrategySettings': mock_strategy_settings}
 
         # Call the method to construct the exit strategy

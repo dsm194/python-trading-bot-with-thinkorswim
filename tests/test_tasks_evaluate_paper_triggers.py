@@ -7,19 +7,15 @@ from api_trader.tasks import Tasks
 class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Mocking the quote manager and passing it to Tasks
-        self.quote_manager = MagicMock()
-        self.position_updater = AsyncMock()
-        self.tasks = Tasks(self.quote_manager, self.position_updater)
-        self.tasks.user = {"Name": "Test User"}
-        self.tasks.account_id = "test_account_id"
+        self.api_trader = MagicMock()
+        self.tasks = Tasks(self.api_trader)
 
-        self.quote_manager.unsubscribe = AsyncMock()
+        self.api_trader.quote_manager.unsubscribe = AsyncMock()
 
         # Mock dependencies within Tasks
         self.tasks.open_positions = MagicMock()
         self.tasks.position_updater.queue_max_price_update = AsyncMock()
-        self.tasks.sendOrder = AsyncMock()
-        self.tasks.logger = MagicMock()
+        self.tasks.api_trader.sendOrder = AsyncMock()
         self.tasks.strategy_dict = {
             "STRATEGY_1": {
                 "ExitStrategy": MagicMock(),
@@ -39,7 +35,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
                 "Asset_Type": "EQUITY"
             }]
         }
-    
+
     async def test_evaluate_paper_triggers_retrieves_correct_strategy(self):
         # Mock quote data
         quote_data = {"last_price": 130, "regular_market_last_price": 125}
@@ -82,7 +78,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         # Mock quote data and other parameters
         quote_data = {"last_price": 130, "regular_market_last_price": 125}
         self.tasks._cached_market_hours = {"isOpen": True}
-        
+
         # Prepare the strategy data with an ExitStrategy mock
         mock_exit_strategy = MagicMock()
         mock_exit_strategy.should_exit.return_value = {
@@ -109,7 +105,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         # Mock quote data and other parameters
         quote_data = {"last_price": 130, "regular_market_last_price": 125}
         self.tasks._cached_market_hours = {"isOpen": False}
-        
+
         # Prepare the strategy data with an ExitStrategy mock
         mock_exit_strategy = MagicMock()
         mock_exit_strategy.should_exit.return_value = {
@@ -154,7 +150,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         await self.tasks.evaluate_paper_triggers("SYM1", {"last_price": 130, "regular_market_last_price": 125})
 
         # Verify sendOrder was called to close position
-        self.tasks.sendOrder.assert_called_once_with(
+        self.tasks.api_trader.sendOrder.assert_called_once_with(
             {
                 "_id": "position_id_1",
                 "Symbol": "SYM1",
@@ -169,7 +165,7 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
             {"ExitStrategy": self.tasks.strategy_dict["STRATEGY_1"]["ExitStrategy"], "Order_Type": "STANDARD"},
             "CLOSE POSITION"
         )
-        self.quote_manager.unsubscribe.assert_called_once_with(["SYM1"])
+        self.api_trader.quote_manager.unsubscribe.assert_called_once_with(["SYM1"])
 
 
 if __name__ == "__main__":

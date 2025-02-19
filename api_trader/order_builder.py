@@ -32,12 +32,16 @@ class AssetType:
 
 class OrderBuilderWrapper:
 
-    def __init__(self, async_mongo=None):
-        self.strategy_cache = {}
+    def __init__(self, logger, user, account_id, async_mongo, tdameritrade):
         """
         Initialize with an optional mongo for fetching open_positions.
         """
+        self.strategy_cache = {}
+        self.logger = logger
+        self.user = user
+        self.account_id = account_id
         self.async_mongo = async_mongo
+        self.tdameritrade = tdameritrade
 
         super().__init__()
 
@@ -85,8 +89,8 @@ class OrderBuilderWrapper:
         )
 
         return sum(total_allocation)
-    
-        
+
+
     def load_default_settings(self, strategy_type):
         # Load the default settings for the given strategy type from the config file
         return default_strategy_settings.get(strategy_type, {})
@@ -94,17 +98,17 @@ class OrderBuilderWrapper:
 
     def load_strategy(self, strategy_object):
         strategy_name = strategy_object.get('ExitStrategy')
-        
+
         # Check if the strategy is already cached
         if strategy_name in self.strategy_cache:
             return self.strategy_cache[strategy_name]
-        
+
         # If not cached, load the strategy
         strategy = self._construct_exit_strategy(strategy_object)
-        
+
         # Store it in the cache
         self.strategy_cache[strategy_name] = strategy
-        
+
         return strategy
 
     def _construct_exit_strategy(self, strategy_object):
@@ -191,7 +195,7 @@ class OrderBuilderWrapper:
 
         # GET QUOTE FOR SYMBOL
         resp = await self.tdameritrade.getQuoteAsync(symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"])
-        
+
         # if we didn't find the symbol, exit - we can't create the order
         if resp is None:
             return None, None
@@ -220,7 +224,7 @@ class OrderBuilderWrapper:
             if max_position_size:
                 current_allocated = await self.get_current_strategy_allocation(strategy, user=user, account_id=account_id)
                 new_allocation = shares * price
-                
+
                 if current_allocated + new_allocation > float(max_position_size):
                     self.logger.warning(
                         f"Order stopped: {side} order for {symbol} not placed. "
@@ -234,7 +238,7 @@ class OrderBuilderWrapper:
                     order = equity_buy_limit(symbol=trade_data["Symbol"], quantity=shares, price=priceAsString)
                 else:
                     order = option_buy_to_open_limit(symbol=trade_data["Pre_Symbol"], quantity=shares, price=priceAsString)
-                    
+
                 obj.update({
                     "Qty": shares,
                     "Position_Size": position_size,

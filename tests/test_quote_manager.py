@@ -178,7 +178,7 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
         # ✅ Generate more symbols than batch_size to force `_update_stream_subscription` to be needed
         base_symbols = ["AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "NFLX", "META", "NVDA", "ADBE", "INTC",
                         "PYPL", "CRM", "CSCO", "IBM", "ORCL", "UBER", "SPOT", "ZM", "SHOP", "SQ"]
-        
+
         symbols_list = [{"symbol": s} for s in base_symbols]  # ✅ Send as a single batch!
 
         with patch.object(self.quote_manager, '_start_quotes_stream') as mock_start_stream, \
@@ -196,7 +196,7 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
 
     async def test_quote_streaming_and_unsubscribe(self):
         """Tests subscribing, receiving price updates, and unsubscribing using a mock stream."""
-        
+
         mock_stream_server = MockStreamingServer()
 
         # ✅ Mock `tdameritrade` to behave like `MockStreamingServer`
@@ -232,7 +232,7 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
 
         # ✅ Subscribe to symbols
         await self.quote_manager.add_quotes(symbols)
-        
+
 
         # ✅ Allow some time for updates to arrive
         await asyncio.sleep(5)

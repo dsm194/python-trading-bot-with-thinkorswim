@@ -130,7 +130,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
 
     @patch.dict(os.environ, {'RUN_TASKS': 'False'})  # Set the environment variable for the test
-    @patch('api_trader.ApiTrader.run_tasks_with_exit_check')
+    @patch('api_trader.Tasks.run_tasks_with_exit_check')
     async def test_initialization_paper_trader(self, mock_run_tasks_with_exit_check):
         """Test ApiTrader initialization when RUN_TASKS is False and Account_Position is 'Paper'."""
 
@@ -228,7 +228,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Use assertRaises to expect the exception
         with self.assertRaises(Exception) as cm:
             await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
-        
+
         self.assertEqual(str(cm.exception), "Failed to place order")
 
         # Validate that error logs contain the expected substring
@@ -253,7 +253,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Setup dependencies
         user = MagicMock()
-        mongo = MagicMock()
         async_mongo = AsyncMock()
         push = MagicMock()
         logger = MagicMock()
@@ -307,7 +306,6 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Setup dependencies
         user = MagicMock()
-        mongo = MagicMock()
         async_mongo = AsyncMock()
         push = MagicMock()
         logger = MagicMock()
@@ -363,7 +361,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Verify that placeTDAOrderAsync was called with the correct order object
         api_trader.tdameritrade.placeTDAOrderAsync.assert_called_once_with("mock_order")
-        
+
 
     async def test_queueOrder(self):
         # Prepare the input order
@@ -576,8 +574,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                 }
             }
         }
-        
-        mongo = MagicMock()
+
         async_mongo = AsyncMock()
         push = MagicMock()
         logger = MagicMock()
@@ -760,7 +757,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Check if Entry_Date is the only difference
         for key, value in expected_args.items():
             self.assertEqual(called_args.get(key), value)
-        
+
         # Verify that the Entry_Date is not checked
         self.assertIn("Entry_Date", called_args)
 
@@ -789,18 +786,18 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "Entry_Price": 150.0,
             "Exit_Date": None
         }
-        
+
         self.spec_order = {
             "price": 155.0,
             "quantity": 10
         }
-        
+
         self.api_trader.async_mongo.open_positions.find_one.return_value = {
             "Qty": 10,
             "Entry_Price": 150.0,
             "Entry_Date": "2024-01-01"
         }
-        
+
         # Mock the `count_documents` method to return 0
         self.api_trader.async_mongo.closed_positions.count_documents.return_value = 0
 
@@ -830,7 +827,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Check if Exit_Date is the only difference
         for key, value in expected_args.items():
             self.assertEqual(called_args.get(key), value)
-        
+
         # Verify that Exit_Date is not checked
         self.assertIn("Exit_Date", called_args)
 
@@ -889,7 +886,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "test_account"
         self.api_trader.updateStatus = AsyncMock()
-        
+
         self.api_trader.async_mongo.users.find_one = AsyncMock(return_value = self.user_mock)
 
         # Mock open_positions.find_one to return None (no open positions)
@@ -930,7 +927,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):
         """Test runTrader method when orders are dynamically generated."""
-        
+
         # Mock relevant methods/attributes used in run_trader
         self.api_trader.user = MagicMock()
         self.api_trader.async_mongo = MagicMock()
@@ -1020,7 +1017,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
     async def test_checkOCOpapertriggers_read_timeout(self):
         """Test that a ReadTimeout exception in add_quotes is handled and logged properly."""
-        
+
         # Mock getMarketHoursUnified to return normal data
         self.api_trader.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={'isOpen': True})
 
@@ -1028,6 +1025,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.stop_event = MagicMock()
         self.api_trader.quote_manager.add_quotes = AsyncMock(side_effect=httpx.ReadTimeout("Read operation timed out."))
+        self.api_trader.tasks.quote_manager = self.api_trader.quote_manager
 
         num_positions = 1
         # # Mock open_positions.find to behave like an AsyncIOMotorCursor
@@ -1050,9 +1048,9 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Mock file existence check for stop_signal_file
         with patch('os.path.exists', return_value=False), \
             patch.object(self.api_trader.logger, 'error') as mock_logger_error:
-            
+
             # Call the method
-            await self.api_trader.checkOCOpapertriggers()
+            await self.api_trader.tasks.checkOCOpapertriggers()
 
             # Verify that the logger captured the exception message from add_quotes
             mock_logger_error.assert_called_once()
@@ -1061,7 +1059,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
     async def test_checkOCOpapertriggers_connect_timeout(self):
         """Test that an exception in add_quotes is handled and logged properly."""
-        
+
         # Mock getMarketHours to return normal data to avoid exceptions there
         self.api_trader.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={'isOpen': True})
 
@@ -1069,6 +1067,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.stop_event = MagicMock()
         self.api_trader.quote_manager.add_quotes = AsyncMock(side_effect = httpx.ConnectTimeout("Connection timed out."))
+        self.api_trader.tasks.quote_manager = self.api_trader.quote_manager
 
         num_positions = 1
         # Mock open_positions.find to mimic AsyncIOMotorCursor
@@ -1080,11 +1079,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_strategies_cursor = AsyncMock()
         mock_strategies_cursor.to_list = AsyncMock(return_value=create_mock_strategies(num_positions))  # Mock `to_list`
         self.api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
-        
+
         # Patch the logger to capture error output
         with patch.object(self.api_trader.logger, 'error') as mock_logger_error:
             # Call the method
-            await self.api_trader.checkOCOpapertriggers()
+            await self.api_trader.tasks.checkOCOpapertriggers()
 
             # Verify that the logger captured the exception message from add_quotes
             mock_logger_error.assert_called_once()
@@ -1093,7 +1092,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
     async def test_checkOCOpapertriggers_general_exception_in_add_quotes(self):
         """Test that an exception in add_quotes is handled and logged properly."""
-        
+
         # Mock getMarketHours to return normal data to avoid exceptions there
         self.api_trader.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={'isOpen': True})
 
@@ -1101,6 +1100,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.quote_manager = AsyncMock()
         self.api_trader.quote_manager.stop_event = MagicMock()
         self.api_trader.quote_manager.add_quotes.side_effect = Exception("An unexpected error in add_quotes")
+        self.api_trader.tasks.quote_manager = self.api_trader.quote_manager
 
         num_positions = 1
 
@@ -1117,7 +1117,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Patch the logger to capture error output
         with patch.object(self.api_trader.logger, 'error') as mock_logger_error:
             # Call the method
-            await self.api_trader.checkOCOpapertriggers()
+            await self.api_trader.tasks.checkOCOpapertriggers()
 
             # Verify that the logger captured the exception message from add_quotes
             mock_logger_error.assert_called_once()
@@ -1167,14 +1167,15 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_stop_event.set = MagicMock()
         mock_stop_event.clear = MagicMock()
         mock_stop_event.wait = AsyncMock()
-        
+
         api_trader.quote_manager.stop_event = mock_stop_event
+        api_trader.tasks.quote_manager = api_trader.quote_manager
 
         # Mock open_positions and strategies
         mock_strategies_cursor = AsyncMock()
         mock_strategies_cursor.to_list = AsyncMock(return_value=create_mock_strategies(num_positions))  # Mock `to_list`
         self.api_trader.async_mongo.strategies.find = MagicMock(return_value=mock_strategies_cursor)
-        
+
         # Mock open_positions.find to mimic AsyncIOMotorCursor
         mock_open_positions_cursor = AsyncMock()
         mock_open_positions = create_mock_open_positions(num_positions)
@@ -1192,11 +1193,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         mock_exit_strategy.return_value.should_exit.return_value = mock_exit_response
 
         # Run the method to test
-        await api_trader.checkOCOpapertriggers()
+        await api_trader.tasks.checkOCOpapertriggers()
 
         # Trigger evaluate_paper_triggers manually to simulate callback behavior
         for position in mock_open_positions:
-            await api_trader.evaluate_paper_triggers(position["Symbol"], {"last_price": 170})
+            await api_trader.tasks.evaluate_paper_triggers(position["Symbol"], {"last_price": 170})
 
         # Assertions
         self.assertEqual(api_trader.async_mongo.open_positions.find.call_count, 1)
@@ -1256,6 +1257,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.quote_manager = AsyncMock()
         api_trader.quote_manager.add_quotes = AsyncMock()
         api_trader.quote_manager.add_callback = AsyncMock()
+        api_trader.tasks.quote_manager = api_trader.quote_manager
 
         # Properly mock the stop_event
         mock_stop_event = MagicMock()
@@ -1267,10 +1269,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.quote_manager.stop_event = mock_stop_event
 
         # First call to checkOCOpapertriggers
-        await api_trader.checkOCOpapertriggers()
+        await api_trader.tasks.checkOCOpapertriggers()
 
         # Assertions after the first call
-        api_trader.quote_manager.add_callback.assert_awaited_once_with(api_trader.evaluate_paper_triggers)
+        api_trader.quote_manager.add_callback.assert_awaited_once_with(api_trader.tasks.evaluate_paper_triggers)
         api_trader.async_mongo.open_positions.find.assert_called()
         api_trader.async_mongo.strategies.find.assert_called()
         api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "AAPL", "asset_type": "EQUITY"}])
@@ -1293,14 +1295,14 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
 
         # Second call to checkOCOpapertriggers
-        await api_trader.checkOCOpapertriggers()
+        await api_trader.tasks.checkOCOpapertriggers()
 
         # Assertions after the second call
         api_trader.quote_manager.add_quotes.assert_awaited_once_with([{"symbol": "MSFT", "asset_type": "EQUITY"}])
 
     @patch.object(ApiTrader, 'pushOrder', return_value=None)  # Mock pushOrder in ApiTrader
     async def test_checkOCOtriggers(self, mock_pushOrder):
-        
+
         api_trader = ApiTrader(
             user=self.user,
             async_mongo=self.async_mongo,
@@ -1390,7 +1392,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ])
 
         # Call the method under test
-        await api_trader.checkOCOtriggers()
+        await api_trader.tasks.checkOCOtriggers()
 
         # Check that pushOrder was called for the filled order
         mock_pushOrder.assert_called_once_with(
@@ -1452,12 +1454,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         ])
 
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        self.api_trader.logger = MagicMock()
-
+    def test_extractOCOchildren(self):
         # Mocking a specific order structure
         spec_order = {
             "childOrderStrategies": [
@@ -1505,18 +1502,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         }
 
         # Call the method
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that the output matches the expected structure
         self.assertEqual(result, expected_output)
 
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_missing_stopPrice(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        self.api_trader.logger = MagicMock()
-
+    def test_extractOCOchildren_missing_stopPrice(self):
         # Mocking an order structure where stopPrice is missing and only price is present
         spec_order = {
             "childOrderStrategies": [
@@ -1549,16 +1541,12 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         }
 
         # Call the method
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that the output matches the expected structure
         self.assertEqual(result, expected_output)
 
-
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_missing_fields(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
+    def test_extractOCOchildren_missing_fields(self):
         # Mock dependencies
         self.api_trader.logger = MagicMock()
         self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
@@ -1596,21 +1584,12 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         }
 
         # Call the method
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that the output matches the expected structure
         self.assertEqual(result, expected_output)
 
-
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_handles_missing_childOrderStrategies(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_handles_missing_childOrderStrategies(self):
         # Create a spec_order with no "childOrderStrategies"
         spec_order = {
             "orderLegCollection": [{"instruction": "SELL"}],
@@ -1632,20 +1611,12 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         }
 
         # Call the method and check if it returns an empty childOrderStrategies dict as expected
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert the method returns the expected result
         self.assertEqual(result, expected_output)
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_handles_empty_childOrderStrategies(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_handles_empty_childOrderStrategies(self):
         # Create a spec_order with empty "childOrderStrategies"
         spec_order = {
             "childOrderStrategies": [{}],  # Empty structure, simulating an edge case
@@ -1667,19 +1638,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
         self.assertEqual(result, expected_output)
 
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_falls_back_to_outer_array_if_no_nested_childOrderStrategies(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_falls_back_to_outer_array_if_no_nested_childOrderStrategies(self):
         spec_order_no_nested_childOrderStrategies = {
             "childOrderStrategies": [
                 {
@@ -1703,19 +1666,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order_no_nested_childOrderStrategies)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order_no_nested_childOrderStrategies)
         self.assertEqual(result, expected_result)
 
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_handles_valid_nested_childOrderStrategies(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_handles_valid_nested_childOrderStrategies(self):
         spec_order_valid_nested_childOrderStrategies = {
             "childOrderStrategies": [{
                 "childOrderStrategies": [
@@ -1741,18 +1696,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order_valid_nested_childOrderStrategies)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order_valid_nested_childOrderStrategies)
         self.assertEqual(result, expected_result)
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_numeric_order_ID(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_numeric_order_ID(self):
         # Mocking a valid numeric order ID
         spec_order = {
             "childOrderStrategies": [
@@ -1769,22 +1716,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that Order_ID is properly converted to an integer
         self.assertEqual(result["childOrderStrategies"][0]["Order_ID"], 1001870497109)
         self.api_trader.logger.error.assert_not_called()
 
-
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_non_numeric_order_ID(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_non_numeric_order_ID(self):
         # Mocking an invalid non-numeric order ID
         spec_order = {
             "childOrderStrategies": [
@@ -1801,7 +1739,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that Order_ID is None because it's not numeric
         self.assertIsNone(result["childOrderStrategies"][0]["Order_ID"])
@@ -1810,15 +1748,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.api_trader.logger.error.assert_called_once_with(f"Invalid or non-numeric Order_ID detected: {spec_order['childOrderStrategies'][0]['childOrderStrategies'][0]}")
 
 
-    @patch('api_trader.ApiTrader.__init__', return_value=None)
-    def test_extractOCOchildren_missing_order_ID(self, mock_init):
-        # Initialize the ApiTrader instance
-        self.api_trader = ApiTrader()
-        # Mock dependencies
-        self.api_trader.logger = MagicMock()
-        self.api_trader.account_id = "123456"  # Set this to a specific account ID for your test
-        self.api_trader.user = {'Name': 'TraderName'}  # Mocking user name
-
+    def test_extractOCOchildren_missing_order_ID(self):
         # Mocking a missing Order_ID
         spec_order = {
             "childOrderStrategies": [
@@ -1835,7 +1765,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        result = self.api_trader.extractOCOchildren(spec_order)
+        result = self.api_trader.tasks.extractOCOchildren(spec_order)
 
         # Assert that Order_ID is None because it's missing
         self.assertIsNone(result["childOrderStrategies"][0]["Order_ID"])

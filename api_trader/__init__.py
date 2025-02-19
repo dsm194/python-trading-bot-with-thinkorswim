@@ -20,7 +20,7 @@ path = Path(THIS_FOLDER)
 load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 
-class ApiTrader(Tasks, OrderBuilderWrapper):
+class ApiTrader(OrderBuilderWrapper):
 
     def __init__(self, user, async_mongo, push, logger, account_id, tdameritrade: TDAmeritrade, quote_manager_pool: QuoteManagerPool):
         """
@@ -32,7 +32,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             account_id ([str]): [USER ACCOUNT ID FOR TDAMERITRADE]
             asset_type ([str]): [ACCOUNT ASSET TYPE (EQUITY, OPTIONS)]
         """
-        
+
         try:
 
             self.RUN_TASKS = os.getenv('RUN_TASKS') == "True"
@@ -47,21 +47,21 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.tdameritrade = tdameritrade
 
             self.no_ids_list = []
-            
+
             self.quote_manager = quote_manager_pool.get_or_create_manager(tdameritrade, logger)
             self.position_updater = PositionUpdater(self.async_mongo.open_positions, self.logger)
 
             # Initialize parent classes
-            Tasks.__init__(self, self.quote_manager, self.position_updater)
-            OrderBuilderWrapper.__init__(self, async_mongo)
+            self.tasks = Tasks(self)
+            OrderBuilderWrapper.__init__(self, logger, user, account_id, async_mongo, tdameritrade)
 
             # Path to the stop signal file
             self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
 
             if self.RUN_TASKS:
                 # Start the event loop in the main thread and process tasks
-                asyncio.create_task(self.run_tasks_with_exit_check())
-                asyncio.create_task(self.trader_thread_function())
+                asyncio.create_task(self.tasks.run_tasks_with_exit_check())
+                asyncio.create_task(self.tasks.trader_thread_function())
                 asyncio.create_task(self.position_updater.start_workers())
                 asyncio.create_task(self.position_updater.monitor_queue())
             else:
@@ -73,7 +73,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             self.logger.info(
                 f"RUNNING {self.user['Accounts'][str(self.account_id)]['Account_Position'].upper()} TRADER ({modifiedAccountID(self.account_id)})\n"
             )
-        
+
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
 
@@ -244,7 +244,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
                     new_status = spec_order.get("status")
                     if new_status == "FILLED":
                         if queue_order["Order_Type"] == "OCO":
-                            queue_order = {**queue_order, **self.extractOCOchildren(spec_order)}
+                            queue_order = {**queue_order, **self.tasks.extractOCOchildren(spec_order)}
                         await self.pushOrder(queue_order, spec_order)
                     elif new_status in {"CANCELED", "REJECTED"}:
                         await self._handle_cancel_reject(queue_order, new_status)
@@ -341,7 +341,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             position = await self.async_mongo.open_positions.find_one(
                 {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
             )
-            
+
             if position:
                 obj.update({
                     "Qty": position["Qty"],
@@ -438,7 +438,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
             for row in trade_data:
                 strategy = row["Strategy"]
                 symbol = row["Symbol"]
-                
+
                 # Lookup strategy, queued order, and open position directly by symbol and strategy
                 queued_order = queued_orders_dict.get(f"{symbol}_{strategy}")
                 open_position = open_positions_dict.get(f"{symbol}_{strategy}")
@@ -446,7 +446,7 @@ class ApiTrader(Tasks, OrderBuilderWrapper):
 
                 # Add new strategy if it doesn't exist
                 if not strategy_object:
-                    strategy_object = await self.addNewStrategy(strategy, row["Asset_Type"])
+                    strategy_object = await self.tasks.addNewStrategy(strategy, row["Asset_Type"])
 
                 position_type = strategy_object["Position_Type"]
                 row["Position_Type"] = position_type

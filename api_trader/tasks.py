@@ -4,16 +4,19 @@ import asyncio
 import os
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 from dotenv import load_dotenv
 from pymongo import UpdateOne
 
-from api_trader.position_updater import PositionUpdater
-from api_trader.quote_manager import QuoteManager
 from assets.exception_handler import exception_handler
 from assets.helper_functions import (getUTCDatetime, modifiedAccountID,
                                      selectSleep)
+
+if TYPE_CHECKING:
+    from api_trader import ApiTrader  # Forward declaration to avoid circular import
+
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -23,16 +26,23 @@ load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 
 class Tasks:
+    """
+    The Tasks class is used for handling additional tasks outside of the live trader.
+    You can add methods that store profit/loss data to Mongo, sell out positions at the end of the day, etc.
+    You can create whatever tasks you want for the bot.
+    You can use the Discord channel named "Tasks" if you need any help.
+    """
 
-    # THE TASKS CLASS IS USED FOR HANDLING ADDITIONAL TASKS OUTSIDE OF THE LIVE TRADER.
-    # YOU CAN ADD METHODS THAT STORE PROFIT LOSS DATA TO MONGO, SELL OUT POSITIONS AT END OF DAY, ETC.
-    # YOU CAN CREATE WHATEVER TASKS YOU WANT FOR THE BOT.
-    # YOU CAN USE THE DISCORD CHANNEL NAMED TASKS IF YOU ANY HELP.
+    def __init__(self, api_trader: "ApiTrader"):
 
-    def __init__(self, quote_manager: QuoteManager, position_updater: PositionUpdater):
-
-        self.quote_manager = quote_manager
-        self.position_updater = position_updater
+        self.api_trader = api_trader
+        self.quote_manager = api_trader.quote_manager
+        self.position_updater = api_trader.position_updater
+        self.logger = api_trader.logger
+        self.user = api_trader.user
+        self.account_id = api_trader.account_id
+        self.async_mongo = api_trader.async_mongo
+        self.tdameritrade = api_trader.tdameritrade
 
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
@@ -93,9 +103,9 @@ class Tasks:
                 if not self.task_status.get(task_name, False):  # Only submit if not running
                     self.task_status[task_name] = True
                     await self.task_queue.put(task_name)
-                    
+
             await asyncio.sleep(selectSleep())
-    
+
     @exception_handler
     async def checkOCOpapertriggers(self):
         dtNow = getUTCDatetime()
@@ -193,7 +203,7 @@ class Tasks:
             for strategy in strategies:
                 strategy_name = strategy["Strategy"]
                 if strategy_name not in self.strategy_dict:
-                    strategy_object = self.load_strategy(strategy)
+                    strategy_object = self.api_trader.load_strategy(strategy)
                     self.strategy_dict[strategy_name] = strategy
                     self.strategy_dict[strategy_name]["ExitStrategy"] = strategy_object
 
@@ -259,14 +269,14 @@ class Tasks:
                 # The exit conditions are met, so we need to close the position
                 position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                 strategy_data["Order_Type"] = "STANDARD"
-                await self.sendOrder(position, strategy_data, "CLOSE POSITION")
+                await self.api_trader.sendOrder(position, strategy_data, "CLOSE POSITION")
 
                 # Mark this position for removal
                 positions_to_remove.append(position)
 
         # 🔍 **NEW: Remove closed positions from `self.positions_by_symbol`**
         should_unsubscribe = False
-        
+
         async with self.lock:
             if positions_to_remove:
                 self.positions_by_symbol[symbol] = [
@@ -363,7 +373,7 @@ class Tasks:
                 await self._apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
             except Exception as e:
                 self.logger.error(f"Error applying bulk updates: {e}")
-        
+
         except Exception as e:
             self.logger.error(f"Failed to fetch open positions: {e}")
 
@@ -395,7 +405,7 @@ class Tasks:
             position["Direction"] = "CLOSE POSITION"
             position["Side"] = child_order.get("Side", "SELL")
 
-            await self.pushOrder(position, spec_order)
+            await self.api_trader.pushOrder(position, spec_order)
             self.logger.info(f"Order {order_id} for {position['Symbol']} filled")
             return
 
