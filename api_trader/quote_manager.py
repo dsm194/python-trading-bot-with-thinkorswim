@@ -1,5 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import logging
+import time
 import jwt  # PyJWT library for decoding tokens
 
 from tdameritrade import TDAmeritrade
@@ -17,6 +19,7 @@ class QuoteManager:
         self.executor = ThreadPoolExecutor(max_workers=10)  # Limit thread pool size
         self.debounce_cache = {}  # Store the latest quote for each symbol
         self.underlying_account_id = self._extract_underlying_account_id(self.tdameritrade.async_client.token_metadata.token, self.logger)
+        self.last_batch_timestamp = 0
 
         self.loop = asyncio.get_event_loop()  # Obtain the event loop first
 
@@ -68,7 +71,45 @@ class QuoteManager:
 
     async def quote_handler(self, quotes):
         """Handles incoming quote updates and stores them in the cache efficiently."""
-        self.logger.debug(f"Received quote: {quotes}")
+
+        if self.logger.isEnabledFor(logging.DEBUG):
+            # self.logger.debug(f"Received quote: {quotes}")
+            # self.logger.debug(f"[QUOTE MANAGER] Received {len(quotes['content'])} quotes in this batch.")
+
+            batch_timestamp = quotes.get("timestamp")  # Single timestamp for the batch
+            if batch_timestamp and batch_timestamp > 1e10:
+                batch_timestamp /= 1000  # Convert to seconds if necessary
+
+            delay_ms = (time.time() - batch_timestamp) * 1000 if batch_timestamp else "UNKNOWN"
+
+            # Track unique symbols and detect duplicates
+            symbol_counts = {}
+            for quote in quotes["content"]:
+                symbol = quote.get("key")
+                symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+
+            unique_symbols = len(symbol_counts)
+            duplicate_symbols = [sym for sym, count in symbol_counts.items() if count > 1]
+
+            # Log batch processing details
+            # Compute inter-batch delay (difference between this batch's timestamp and the last batch's timestamp)
+            current_batch_time = batch_timestamp or 0
+            time_since_last_batch = current_batch_time - self.last_batch_timestamp
+
+            self.logger.debug(
+                f"[QUOTE MANAGER] Received {len(quotes['content'])} quotes "
+                f"(batch timestamp: {batch_timestamp}, delay: {delay_ms if isinstance(delay_ms, (int, float)) else 'UNKNOWN'} ms, "
+                f"time since last batch: {time_since_last_batch:.2f} ms, unique symbols: {unique_symbols})"
+            )
+
+            self.last_batch_timestamp = current_batch_time  # Store for next iteration
+
+            if duplicate_symbols:
+                self.logger.warning(f"[QUOTE MANAGER] Duplicate symbols in batch: {duplicate_symbols}")
+
+            # Log first few symbols for verification
+            example_quotes = quotes["content"][:5]  # Show the first 5 quotes
+            self.logger.debug(f"[QUOTE MANAGER] Example quotes: {example_quotes}")
 
         quote_list = quotes.get("content", [])
         batch_updates = {}
@@ -91,7 +132,7 @@ class QuoteManager:
         # Apply all updates at once after acquiring the lock
         async with self.lock:
             for symbol, updated_values in batch_updates.items():
-                cached_quote = self.quotes.get(symbol, {})
+                cached_quote = self.quotes.setdefault(symbol, {})
 
                 # Merge while preserving old values if new values are None
                 self.quotes[symbol] = {
@@ -150,9 +191,7 @@ class QuoteManager:
     async def _listen_for_resets(self):
         """Listen for stream reset events and clean up subscribed symbols."""
         while not self.stop_event.is_set():
-            # Wait for the reset_event to be triggered
-            await self.reset_event.wait()
-            self.reset_event.clear()  # Reset the event for future use
+            await self.reset_event.wait()  # Now always detects new reset events
 
             async with self.lock:
                 if self.subscribed_symbols:
@@ -163,6 +202,8 @@ class QuoteManager:
 
             async with self.stream_lock:
                 self.stream_initialized.clear()
+
+            self.reset_event.clear()  # Only clear AFTER processing
 
     async def _start_quotes_stream(self, symbols):
         try:
@@ -211,7 +252,6 @@ class QuoteManager:
             self.logger.error(f"[QUOTE MANAGER] Timeout waiting for update_subscription() to return!")
         except Exception as e:
             self.logger.error(f"[QUOTE MANAGER] Failed to update stream subscription: {e}")
-            
             raise
 
     async def add_quotes(self, symbols, batch_size=10):
@@ -248,19 +288,20 @@ class QuoteManager:
             # Process remaining batches using `_update_stream_subscription`
             for i in range(0, len(remaining_batches), batch_size):
                 batch = remaining_batches[i:i + batch_size]
-                self.logger.debug(f"Calling `_update_stream_subscription` with: {batch}")
-                await self._update_stream_subscription(batch)
+                if batch:
+                    self.logger.debug(f"Calling `_update_stream_subscription` with: {batch}")
+                    await self._update_stream_subscription(batch)
 
             self.logger.info(f"Successfully updated stream subscription with {len(new_symbols)} symbols.")
         except Exception as e:
             self.logger.error(f"Failed to process batch: {e}")
 
-            # Rollback `is_streaming` if we had set it to `True` but the stream failed
-            if start_stream:
-                self.is_streaming = False
-
-            # Rollback failed symbols
+            # Only rollback is_streaming if it was *this* coroutine that set it
             async with self.lock:
+                if start_stream and not self.stream_initialized.is_set():
+                    self.is_streaming = False
+
+                # Rollback failed symbols
                 for s in new_symbols:
                     self.subscribed_symbols.pop(s["symbol"], None)
 
@@ -335,6 +376,7 @@ class QuoteManager:
             except Exception as e:
                 self.logger.error(f"Error during streaming disconnect: {e}")
 
-            # Properly shut down the executor
-            self.executor.shutdown(wait=True)
+            # Shutdown ThreadPoolExecutor in an async-safe way
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.executor.shutdown, True)
             self.logger.info("Streaming stopped and resources cleaned up.")

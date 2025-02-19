@@ -331,7 +331,7 @@ class TDAmeritrade:
             return None
 
     @exception_handler
-    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=5):
+    async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=1):
         retries = 0
         self.stream_initialized_event = initialized_event
         self.logger.info(f"Starting stream for symbols: {symbols} ({modifiedAccountID(self.account_id)})")
@@ -350,7 +350,7 @@ class TDAmeritrade:
 
         async def stream_messages():
             """Stream messages continuously with rate limiting."""
-            last_received_time = time.time()
+            last_received_time = time.monotonic()
             while not (stop_event and stop_event.is_set()):
                 try:
                     # Wrap handle_message in a task
@@ -379,10 +379,9 @@ class TDAmeritrade:
                             raise task.exception()
 
                     # Throttle message handling by waiting for the defined rate limit
-                    time_elapsed = time.time() - last_received_time
-                    if time_elapsed < message_rate_limit:
-                        await asyncio.sleep(message_rate_limit - time_elapsed)  # Wait for the next slot
-                    last_received_time = time.time()
+                    time_elapsed = time.monotonic() - last_received_time
+                    sleep_time = max(0, message_rate_limit - time_elapsed)
+                    await asyncio.sleep(sleep_time)
 
                 except asyncio.TimeoutError:
                     self.logger.warning("Timeout waiting for messages.")
