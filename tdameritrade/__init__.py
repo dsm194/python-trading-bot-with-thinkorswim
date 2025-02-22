@@ -64,6 +64,9 @@ class TDAmeritrade:
 
         self.stream_initialized_event = None
 
+        self.account_hash = None
+        self.account_lock = asyncio.Lock()  # Prevent multiple calls to get_account_numbers()
+
 
     @exception_handler
     async def initialConnect(self):
@@ -71,21 +74,38 @@ class TDAmeritrade:
         self.logger.info(
             f"CONNECTING {self.user['Name']} TO TDAMERITRADE ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
 
-        if isValid:
+        if is_valid:
+            self.account_hash = await self.get_account_hash()
 
             self.logger.info(
                 f"CONNECTED {self.user['Name']} TO TDAMERITRADE ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
             return True
 
-        else:
 
-            self.logger.error(
-                f"FAILED TO CONNECT {self.user['Name']} TO TDAMERITRADE ({modifiedAccountID(self.account_id)})", extra={'log': False})
+        self.logger.error(
+            f"FAILED TO CONNECT {self.user['Name']} TO TDAMERITRADE ({modifiedAccountID(self.account_id)})", extra={'log': False})
 
-            return False
+        return False
+
+    async def get_account_hash(self):
+        """Returns cached account hash or fetches it if not available"""
+        if self.account_hash:
+            return self.account_hash  # Use cached value if available
+
+        async with self.account_lock:  # Prevent concurrent fetches
+            if self.account_hash:  # Double-check after acquiring lock
+                return self.account_hash
+
+            resp = await self.async_client.get_account_numbers()
+            if resp.status_code == httpx.codes.OK:
+                self.account_hash = resp.json()[0]['hashValue']
+                return self.account_hash
+
+            self.logger.error(f"Failed to fetch account hash: {resp.text}")
+            return None  # Handle error properly
 
     @exception_handler
     async def checkTokenValidityAsync(self):
@@ -195,19 +215,11 @@ class TDAmeritrade:
             [json]: ACCOUNT DATA
         """
 
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
 
-        if isValid:
-            resp = await self.async_client.get_account_numbers()
-            if resp.status_code == httpx.codes.OK:
-                # The response has the following structure:
-                # [
-                #    {
-                #        "accountNumber": "123456789",
-                #        "hashValue":"123ABCXYZ"
-                #    }
-                #]
-                account_hash = resp.json()[0]['hashValue']
+        if is_valid:
+            account_hash = await self.get_account_hash()
+            if account_hash:
                 account_resp = await self.async_client.get_account(account_hash)
                 return account_resp.json()  # Ensure this is the final awaited object
             else:
@@ -231,14 +243,14 @@ class TDAmeritrade:
         if not is_valid:
             return None
 
-        resp = await self.async_client.get_account_numbers()
-        if resp.status_code == httpx.codes.OK:
-            account_hash = resp.json()[0]['hashValue']
+        account_hash = await self.get_account_hash()
+        if account_hash:
             # Place the order
             resp = await self.async_client.place_order(account_hash, data)
-
-        if resp.status_code not in [200, 201]:
-            return resp  # Return the raw response to handle errors
+            if resp.status_code not in [200, 201]:
+                return resp  # Return the raw response to handle errors
+        else:
+            return account_hash  # Return the raw response to handle errors
 
         # Extract the main order ID
         # TODO: why do we have to pass client here?
@@ -274,7 +286,7 @@ class TDAmeritrade:
         elif isinstance(order_data, list):
             for item in order_data:
                 self.rename_order_ids(item)
-        
+
         return order_data
 
 
@@ -591,7 +603,7 @@ class TDAmeritrade:
                 if attempt < retries - 1:
                     await asyncio.sleep(delay)
                 else:
-                    raise RuntimeError(f"Failed to reconnect after retries. ({modifiedAccountID(self.account_id)})")
+                    raise RuntimeError(f"Failed to reconnect after retries. ({modifiedAccountID(self.account_id)})") from e
 
     async def _safe_disconnect_streaming(self):
         if not self.is_streaming_connected:
@@ -647,52 +659,51 @@ class TDAmeritrade:
             self.logger.warning(f"Suppressed exception during logout: {e}")
         finally:
             self.logger.debug("Finished disconnect_streaming.")
-        
-    async def getSpecificOrderAsync(self, id):
-        """ METHOD GETS A SPECIFIC ORDER INFO
 
-        Args:
-            id ([int]): ORDER ID FOR ORDER
+    async def getSpecificOrderAsync(self, order_id):
+        """Retrieve specific order information asynchronously."""
 
-        Returns:
-            [json]: ORDER DATA
-        """
-
-        # Try to convert the order ID to an integer for the comparison
         try:
-            numeric_id = int(id)
+            numeric_id = int(order_id)
         except (ValueError, TypeError):
-            numeric_id = None
+            self.logger.error(f"Invalid order ID: {order_id} ({modifiedAccountID(self.account_id)})")
+            return None
 
-        # If the order ID is an integer and less than 0, assume it's a paper trade
-        if numeric_id is not None and numeric_id < 0:
+        if numeric_id < 0:
             return {'message': 'Order not found'}
 
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
+        if not is_valid:
+            self.logger.warning(f"Token invalid, cannot retrieve order {order_id} ({modifiedAccountID(self.account_id)})")
+            return None
 
-        if isValid:
-            resp = await self.async_client.get_account_numbers()
-            if resp.status_code == httpx.codes.OK:
-                account_hash = resp.json()[0]['hashValue']
-            
-                try:
-                    response = await self.async_client.get_order(id, account_hash)
+        account_hash = await self.get_account_hash()
+        if not account_hash:
+            self.logger.error(f"Account hash missing in response. ({modifiedAccountID(self.account_id)})")
+            return None
 
-                    if response.status_code != 200:
-                        self.logger.warning(f"Failed to get specific order: {id}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
-                        # return None
+        try:
+            response = await self.async_client.get_order(order_id, account_hash)
 
-                    return self.rename_order_ids(response.json())
+            # **Log response details for debugging**
+            self.logger.debug(f"Order {order_id} API Response: Status={response.status_code}, Body={response.text}")
 
-                except Exception as e:
-                    self.logger.error(f"An error occurred while attempting to get specific order: {id}. Error: {e} ({modifiedAccountID(self.account_id)})")
-                    return
-            else:
-                return
-        else:
-            return
+            if response.status_code != 200:
+                self.logger.error(f"Failed to get specific order: {order_id}. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
+                return None
 
-    async def cancelOrder(self, id):
+            order_data = response.json()
+            if not order_data:
+                self.logger.error(f"Empty response for order {order_id}")
+                return None
+
+            return self.rename_order_ids(order_data)
+
+        except Exception as e:
+            self.logger.error(f"An error occurred while attempting to get specific order: {order_id}. Error: {e} ({modifiedAccountID(self.account_id)})")
+            return None
+
+    async def cancelOrder(self, order_id):
         """ METHOD CANCELS ORDER
 
         Args:
@@ -702,38 +713,28 @@ class TDAmeritrade:
             [json]: RESPONSE. LOOKING FOR STATUS CODE 200,201
         """
 
-        url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
+        # url = f"https://api.tdameritrade.com/v1/accounts/{self.account_id}/orders/{id}"
 
         # return self.sendRequest(url, method="DELETE")
 
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
 
-        if isValid:
-            resp = await self.async_client.get_account_numbers()
-            if resp.status_code == httpx.codes.OK:
-                # The response has the following structure. If you have multiple linked
-                # accounts, you'll need to inspect this object to find the hash you want:
-                # [
-                #    {
-                #        "accountNumber": "123456789",
-                #        "hashValue":"123ABCXYZ"
-                #    }
-                #]
-                account_hash = resp.json()[0]['hashValue']
-            
+        if is_valid:
+            account_hash = await self.get_account_hash()
+            if account_hash:
                 try:
-                    response = await self.async_client.cancel_order(id, account_hash)
+                    response = await self.async_client.cancel_order(order_id, account_hash)
 
                     # Check if the response status is not 200
                     if response.status_code != 200:
-                        self.logger.error(f"Failed to cancel order: {id}. HTTP Status: {response.status_code}")
+                        self.logger.error(f"Failed to cancel order: {order_id}. HTTP Status: {response.status_code}")
                         return None
                     
                     # Parse the JSON only if it's a successful response
                     return response.json()
                     
                 except Exception as e:
-                    self.logger.error(f"An error occurred while attempting to cancel order: {id}. Error: {e}")
+                    self.logger.error(f"An error occurred while attempting to cancel order: {order_id}. Error: {e}")
                     return None
             else:
                 return
@@ -741,9 +742,9 @@ class TDAmeritrade:
             return
     
     async def getMarketHoursAsync(self, markets=None, *, date=None):
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
 
-        if isValid:
+        if is_valid:
             try:
                 # If no market is provided, get all the enum values as a list
                 if markets is None:

@@ -41,7 +41,8 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
-    async def test_initialConnect_success(self, mock_checkTokenValidity):
+    @patch('tdameritrade.TDAmeritrade.get_account_hash')
+    async def test_initialConnect_success(self, mock_get_account_hash, mock_checkTokenValidity):
         # Mock checkTokenValidity to return True (successful connection)
         mock_checkTokenValidity.return_value = True
 
@@ -379,7 +380,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_checkTokenValidity.return_value = False
 
         # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Ensure that the method returns None when the token is invalid
         self.assertIsNone(result)
@@ -455,11 +456,11 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Set the mock client to the TDAmeritrade instance and call the method
         self.td_ameritrade.async_client = mock_client
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Ensure that the method logs the error and returns None
-        self.td_ameritrade.logger.warning.assert_called_once_with(f"Failed to get specific order: 12345. HTTP Status: 404 ({modifiedAccountID(self.account_id)})")
-        self.assertEqual(result, {"error": "Order not found"})
+        self.td_ameritrade.logger.error.assert_called_once_with(f"Failed to get specific order: 12345. HTTP Status: 404 ({modifiedAccountID(self.account_id)})")
+        self.assertIsNone(result)
 
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
@@ -479,7 +480,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.td_ameritrade.async_client = mock_async_client
 
         # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Ensure that the method logs the exception and returns None
         self.assertIsNone(result)
@@ -491,7 +492,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_paper_trade(self, mock_checkTokenValidity):
         # Test case where the order is a paper trade (ID < 0)
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=-1)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=-1)
 
         # Assert that the method returns the 'Order not found' message
         self.assertEqual(result, {'message': 'Order not found'})
@@ -518,7 +519,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.td_ameritrade.async_client = mock_client
 
         # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Ensure that the method returns the correct result
         self.assertEqual(result, {"Order_ID": 12345})
@@ -551,7 +552,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.td_ameritrade.async_client = mock_client
 
         # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Assert correct status handling
         self.assertEqual(result, {
@@ -585,13 +586,13 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.td_ameritrade.async_client = mock_client
 
         # Call the method
-        result = await self.td_ameritrade.getSpecificOrderAsync(id=12345)
+        result = await self.td_ameritrade.getSpecificOrderAsync(order_id=12345)
 
         # Assert that the method returns None for a non-existent order
         self.assertIsNone(result)
 
         # Ensure the logger warning is called with the correct message
-        self.logger_mock.warning.assert_called_once_with(
+        self.logger_mock.error.assert_called_once_with(
             f"Failed to get specific order: 12345. HTTP Status: 404 ({modifiedAccountID(self.account_id)})"
         )
 
