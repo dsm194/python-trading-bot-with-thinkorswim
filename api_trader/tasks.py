@@ -448,7 +448,7 @@ class Tasks:
             if new_status == current_status:
                 self.logger.debug(f"Skipping update for Order_ID {order_id} (Status unchanged: {new_status})")
                 return
-            
+
             self.logger.debug(f"Updating Order_ID {order_id} from {current_status} to {new_status}")
 
             # Use array filters to update the specific child order's status based on Order_ID
@@ -479,7 +479,7 @@ class Tasks:
 
     async def _apply_bulk_updates(self):
         """Processes bulk updates, rejected orders, and canceled orders from queues with error handling."""
-        
+
         try:
             # Process bulk updates
             bulk_updates = []

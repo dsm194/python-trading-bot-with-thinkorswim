@@ -205,7 +205,7 @@ class TDAmeritrade:
             else token_write_func)
 
         return client_from_received_url(
-                API_KEY, APP_SECRET, auth_context, received_url, token_write_func, 
+                API_KEY, APP_SECRET, auth_context, received_url, token_write_func,
                 asyncio, True)
 
     async def getAccount(self):
@@ -729,10 +729,10 @@ class TDAmeritrade:
                     if response.status_code != 200:
                         self.logger.error(f"Failed to cancel order: {order_id}. HTTP Status: {response.status_code}")
                         return None
-                    
+
                     # Parse the JSON only if it's a successful response
                     return response.json()
-                    
+
                 except Exception as e:
                     self.logger.error(f"An error occurred while attempting to cancel order: {order_id}. Error: {e}")
                     return None
@@ -740,7 +740,7 @@ class TDAmeritrade:
                 return
         else:
             return
-    
+
     async def getMarketHoursAsync(self, markets=None, *, date=None):
         is_valid = await self.checkTokenValidityAsync()
 
@@ -760,10 +760,10 @@ class TDAmeritrade:
                 if response.status_code != 200:
                     self.logger.error(f"Failed to retrieve market hours for markets: {markets}. HTTP Status: {response.status_code}")
                     return None
-                
+
                 # Parse the JSON only if it's a successful response
                 return response.json()
-                
+
             except Exception as e:
                 self.logger.error(f"An error occurred while retrieving market hours for markets: {markets}. Error: {e}")
                 return None

@@ -33,10 +33,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Instantiate TDAmeritrade with mock objects
         self.td_ameritrade = TDAmeritrade(
-            async_mongo=self.mongo_mock, 
-            user=self.user_mock, 
-            account_id=self.account_id, 
-            logger=self.logger_mock, 
+            async_mongo=self.mongo_mock,
+            user=self.user_mock,
+            account_id=self.account_id,
+            logger=self.logger_mock,
             push_notification=self.push_notification_mock
         )
 
@@ -66,32 +66,32 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     async def test_checkTokenValidity_token_exists(self, mock_isfile, mock_client_from_token_file):
         # Simulate that the token file exists
         mock_isfile.return_value = True
-        
+
         # Create a mock for the client with the token metadata
         mock_client = MagicMock()
         mock_token_metadata = MagicMock()
         mock_token = MagicMock()
-        
+
         # Simulate the expiration time for the token
         mock_token.get.return_value = 3600  # Token expires in 3600 seconds (1 hour)
         mock_token_metadata.token = mock_token
         mock_client.token_metadata = mock_token_metadata
-        
+
         # Set the mock client to be returned by client_from_token_file
         mock_client_from_token_file.return_value = mock_client
-        
+
         # Simulate MongoDB user data
         self.mongo_mock.users.find_one.return_value = self.user_mock
 
         # Call the method
         result = await self.td_ameritrade.checkTokenValidityAsync()
-        
+
         # Assert the method returns True
         self.assertTrue(result)
-        
+
         # Assert client_from_token_file was called with expected arguments
         mock_client_from_token_file.assert_any_call("test_token_path", 'mock_api_key', 'mock_app_secret', asyncio=True)
-        
+
         # Assert MongoDB update was called
         self.mongo_mock.users.update_one.assert_called_once()
 
@@ -141,10 +141,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     async def checkTokenValidity_fails(self, mock_isfile, mock_client_from_manual_flow, mock_client_from_token_file):
         # Simulate the token file does not exist
         mock_isfile.return_value = False
-        
+
         # Simulate `client_from_manual_flow` failing to return a valid client
         mock_client_from_manual_flow.return_value = None
-        
+
         # Simulate MongoDB user data
         self.mongo_mock.users.find_one.return_value = self.user_mock
 
@@ -175,7 +175,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Assertions
         self.logger_mock.error.assert_called_once()
         self.assertIsNone(result, "Expected None for non-existent symbol")
-        
+
         # Expect the 'get_quote' method to be called with the symbol and the default 'fields' value
         mock_client.get_quote.assert_called_once_with("INVALID_SYMBOL", fields=schwabBaseClient.Quote.Fields.QUOTE)  # Adjusted to expect 'fields'
 
@@ -187,24 +187,24 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Create a mock async client
         mock_async_client = AsyncMock()
-        
+
         # Mock the return value of get_account_numbers
         mock_async_client.get_account_numbers.return_value = AsyncMock(
-            status_code=httpx.codes.OK, 
+            status_code=httpx.codes.OK,
             json=lambda: [{'hashValue': 'mock_account_hash'}]
         )
-        
+
         # Mock the return value of get_account
         mock_async_client.get_account.return_value = AsyncMock(
             json=lambda: {'accountNumber': 'mock_account_number', 'balance': 1000}
         )
-        
+
         # Set the mock async client as the async_client attribute
         self.td_ameritrade.async_client = mock_async_client
-        
+
         # Call the method
         result = await self.td_ameritrade.getAccount()
-        
+
         # Assertions
         self.assertEqual(result, {'accountNumber': 'mock_account_number', 'balance': 1000})
         mock_checkTokenValidity.assert_called_once()
@@ -216,10 +216,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     async def test_getAccount_token_invalid(self, mock_checkTokenValidity):
         # Mock token validity check to return False
         mock_checkTokenValidity.return_value = False
-        
+
         # Call the method
         result = await self.td_ameritrade.getAccount()
-        
+
         # Assertions
         self.assertIsNone(result)
         mock_checkTokenValidity.assert_called_once()
@@ -233,13 +233,13 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Create a mock client with get_account_numbers failing
         mock_client = AsyncMock()
         mock_client.get_account_numbers.return_value = AsyncMock(status_code=500)  # Simulate failure
-        
+
         # Set the mock client as the client attribute
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method
         result = await self.td_ameritrade.getAccount()
-        
+
         # Assertions
         self.assertIsNone(result)
         mock_checkTokenValidity.assert_called_once()
@@ -254,18 +254,18 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Create a mock client and set its behavior for get_quote
         mock_client = AsyncMock()
         mock_client.get_quote.return_value = AsyncMock(status_code=200, json=lambda: {'symbol': 'AAPL', 'price': 150})
-        
+
         # Set the mock client to the TDAmeritrade instance
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method with a valid symbol
         result = await self.td_ameritrade.getQuoteAsync('AAPL')
-        
+
         # Assert the expected result
         self.assertEqual(result, {'symbol': 'AAPL', 'price': 150})
         mock_checkTokenValidity.assert_called_once()
         mock_client.get_quote.assert_called_once_with('AAPL', fields=schwabBaseClient.Quote.Fields.QUOTE)
-    
+
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_getQuote_empty_symbol(self, mock_checkTokenValidity):
@@ -362,13 +362,13 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Create a mock client and set its behavior for get_quotes
         mock_client = AsyncMock()
         mock_client.get_quotes.return_value = AsyncMock(status_code=200, json=lambda: {'AAPL/MSFT': {'symbol': 'AAPL/MSFT', 'price': 200}})
-        
+
         # Set the mock client to the TDAmeritrade instance
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method with a symbol containing "/"
         result = await self.td_ameritrade.getQuoteAsync('AAPL/MSFT')
-        
+
         # Assert the expected result
         self.assertEqual(result, {'AAPL/MSFT': {'symbol': 'AAPL/MSFT', 'price': 200}})
         mock_checkTokenValidity.assert_called_once()
@@ -384,7 +384,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Ensure that the method returns None when the token is invalid
         self.assertIsNone(result)
-    
+
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_specific_order_success(self, mock_checkTokenValidity):
         # Mock token validity to be True
@@ -530,7 +530,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_checkTokenValidity.return_value = True
 
         mock_client = AsyncMock()
-        
+
         mock_resp_account = MagicMock()
         mock_resp_account.status_code = 200
         mock_resp_account.json.return_value = [{"accountNumber": "123456789", "hashValue": "123ABCXYZ"}]
@@ -796,29 +796,29 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     @patch('tdameritrade.Utils')  # Mock Utils if used in the method
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_placeTDAOrder_successful(self, mock_checkTokenValidity, MockUtils):
-        
+
         mock_checkTokenValidity.return_value = True
 
         # Create a mock client with necessary methods
         mock_client = AsyncMock()
         mock_client.get_account_numbers.return_value = MagicMock(status_code=200, json=lambda: [{'hashValue': 'mock_account_hash'}])
         mock_client.place_order.return_value = MagicMock(status_code=200)
-        
+
         # Mock Utils methods
         mock_utils_instance = MockUtils.return_value
         mock_utils_instance.extract_order_id.return_value = 'mock_order_id'
-        
+
         # Mock getSpecificOrder and rename_order_ids methods
         self.td_ameritrade.getSpecificOrderAsync = AsyncMock(return_value={'orderId': 'mock_order_id'})
         self.td_ameritrade.rename_order_ids = MagicMock(return_value={'Order_ID': 'mock_order_id'})
-        
+
         # Set the mock client as the client attribute
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method
         order_data = {'symbol': 'AAPL', 'quantity': 1, 'price': 150}
         result = await self.td_ameritrade.placeTDAOrderAsync(order_data)
-        
+
         # Assertions
         self.assertEqual(result, {'Order_ID': 'mock_order_id'})
         mock_checkTokenValidity.assert_called_once()
@@ -831,27 +831,27 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
     @patch('tdameritrade.Utils')  # Mock Utils if used in the method
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_placeTDAOrder_token_invalid(self, mock_checkTokenValidity, MockUtils):
-        
+
         mock_checkTokenValidity.return_value = False
-        
+
         # Create a mock client (though it won't be used since token validity fails)
         mock_client = AsyncMock()
-        
+
         # Mock Utils methods
         mock_utils_instance = MockUtils.return_value
         mock_utils_instance.extract_order_id.return_value = 'mock_order_id'
-        
+
         # Mock getSpecificOrder and rename_order_ids methods
         self.td_ameritrade.getSpecificOrderAsync = AsyncMock(return_value={'orderId': 'mock_order_id'})
         self.td_ameritrade.rename_order_ids = MagicMock(return_value={'Order_ID': 'mock_order_id'})
-        
+
         # Set the mock client as the client attribute
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method
         order_data = {'symbol': 'AAPL', 'quantity': 1, 'price': 150}
         result = await self.td_ameritrade.placeTDAOrderAsync(order_data)
-        
+
         # Assertions
         self.assertIsNone(result)  # Should return None if the token is invalid
         mock_checkTokenValidity.assert_called_once()
@@ -860,33 +860,33 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_utils_instance.extract_order_id.assert_not_called()
         self.td_ameritrade.getSpecificOrderAsync.assert_not_called()
 
-    
+
     @patch('tdameritrade.Utils')  # Mock Utils if used in the method
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_placeTDAOrder_order_placement_fails(self, mock_checkTokenValidity, MockUtils):
-        
+
         mock_checkTokenValidity.return_value = True
 
         # Create a mock client with necessary methods
         mock_client = AsyncMock()
         mock_client.get_account_numbers.return_value = MagicMock(status_code=200, json=lambda: [{'hashValue': 'mock_account_hash'}])
         mock_client.place_order.return_value = MagicMock(status_code=500)  # Simulate order placement failure
-        
+
         # Mock Utils methods
         mock_utils_instance = MockUtils.return_value
         mock_utils_instance.extract_order_id.return_value = 'mock_order_id'
-        
+
         # Mock getSpecificOrder and rename_order_ids methods
         self.td_ameritrade.getSpecificOrderAsync = AsyncMock(return_value={'orderId': 'mock_order_id'})
         self.td_ameritrade.rename_order_ids = MagicMock(return_value={'Order_ID': 'mock_order_id'})
-        
+
         # Set the mock client as the client attribute
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method
         order_data = {'symbol': 'AAPL', 'quantity': 1, 'price': 150}
         result = await self.td_ameritrade.placeTDAOrderAsync(order_data)
-        
+
         # Assertions
         self.assertEqual(result.status_code, 500)  # Should return the raw response if placement fails
         mock_checkTokenValidity.assert_called_once()
@@ -895,33 +895,33 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_utils_instance.extract_order_id.assert_not_called()
         self.td_ameritrade.getSpecificOrderAsync.assert_not_called()
 
-    
+
     @patch('tdameritrade.Utils')  # Mock Utils if used in the method
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_placeTDAOrder_no_order_id(self, mock_checkTokenValidity, MockUtils):
-        
+
         mock_checkTokenValidity.return_value = True
 
         # Create a mock client with necessary methods
         mock_client = AsyncMock()
         mock_client.get_account_numbers.return_value = MagicMock(status_code=200, json=lambda: [{'hashValue': 'mock_account_hash'}])
         mock_client.place_order.return_value = MagicMock(status_code=200)
-        
+
         # Mock Utils methods
         mock_utils_instance = MockUtils.return_value
         mock_utils_instance.extract_order_id.return_value = None  # No order ID
-        
+
         # Mock getSpecificOrder and rename_order_ids methods
         self.td_ameritrade.getSpecificOrderAsync = AsyncMock(return_value={})
         self.td_ameritrade.rename_order_ids = MagicMock(return_value={})
-        
+
         # Set the mock client as the client attribute
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method
         order_data = {'symbol': 'AAPL', 'quantity': 1, 'price': 150}
         result = await self.td_ameritrade.placeTDAOrderAsync(order_data)
-        
+
         # Assertions
         self.assertEqual(result, {"Order_ID": None})  # Should return basic info with None as the order ID
         mock_checkTokenValidity.assert_called_once()
@@ -929,7 +929,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_client.place_order.assert_called_once_with('mock_account_hash', order_data)
         mock_utils_instance.extract_order_id.assert_called_once()
         self.td_ameritrade.getSpecificOrderAsync.assert_not_called()
-        
+
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_market_hours_invalid_token(self, mock_checkTokenValidity):
@@ -1004,7 +1004,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         self.td_ameritrade.logger.error.assert_called_once_with("An error occurred while retrieving market hours for markets: ['EQUITY']. Error: API error")
         self.assertIsNone(result)
 
-    
+
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_get_account_numbers_handles_404(self, mock_checkTokenValidity):
         # Mock checkTokenValidity to return True
@@ -1019,13 +1019,13 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         mock_client = AsyncMock()
         mock_client.get_account_numbers.return_value = mock_response
         self.td_ameritrade.async_client = mock_client
-        
+
         # Call the method and assert it handles the 404 gracefully
         account_numbers = await self.td_ameritrade.getAccount()
-        
+
         # Assert that account_numbers is None (or empty) when 404 occurs
         self.assertIsNone(account_numbers)
-        
+
 
 if __name__ == '__main__':
     unittest.main()

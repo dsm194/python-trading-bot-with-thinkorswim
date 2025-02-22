@@ -27,10 +27,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         
         # Instantiate TDAmeritrade with mock objects
         self.td = TDAmeritrade(
-            async_mongo=self.mongo_mock, 
-            user=self.user_mock, 
-            account_id=self.account_id, 
-            logger=self.logger_mock, 
+            async_mongo=self.mongo_mock,
+            user=self.user_mock,
+            account_id=self.account_id,
+            logger=self.logger_mock,
             push_notification=self.push_notification_mock
         )
         # Mock the stream_client and logger
