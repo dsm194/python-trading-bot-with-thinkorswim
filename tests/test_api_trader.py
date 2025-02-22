@@ -1316,9 +1316,11 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Mock dependencies
         api_trader.queue = AsyncMock()
         api_trader.async_mongo.open_positions = AsyncMock()
-        api_trader.async_mongo.open_positions.bulk_write = AsyncMock()
+        api_trader.async_mongo.open_positions.bulk_write = AsyncMock(return_value=None)
         api_trader.async_mongo.canceled = AsyncMock()
+        api_trader.async_mongo.canceled.insert_many = AsyncMock(return_value=None)
         api_trader.async_mongo.rejected = AsyncMock()
+        api_trader.async_mongo.rejected.insert_many = AsyncMock(return_value=None)
 
         mock_open_positions = [
             {
@@ -1371,18 +1373,14 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        # Mock open_positions.find to mimic AsyncIOMotorCursor
-        # mock_open_positions_cursor = AsyncMock()
-        # # mock_open_positions = [{"Symbol": "AAPL", "Asset_Type": "EQUITY", "Trader": self.api_trader.user, "Account_ID": self.api_trader.account_id}]
-        # mock_open_positions_cursor.to_list = AsyncMock(return_value=mock_open_positions)  # Mock `to_list`
-        # api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_open_positions_cursor)
+        # Mock open_positions.find to mimic `.to_list()`
+        api_trader.async_mongo.open_positions.find = MagicMock()
+        api_trader.async_mongo.open_positions.find.return_value.to_list = AsyncMock(
+            side_effect=[mock_open_positions, []]  # First call returns data, second call returns empty list
+        )
 
-        # Mock cursor to simulate async iteration
-        mock_cursor = AsyncMock()
-        mock_cursor.__aiter__.return_value = iter(mock_open_positions)  # Mock async iteration
-        api_trader.async_mongo.open_positions.find = MagicMock(return_value=mock_cursor)
 
-        # Mock getSpecificOrder for different orders
+        # Mock getSpecificOrderAsync for different orders
         api_trader.tdameritrade.getSpecificOrderAsync = AsyncMock(
             side_effect = [
                 {"status": "FILLED", "Order_ID": 12345},
@@ -1409,7 +1407,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Check logger info for CANCELED order
         api_trader.logger.info.assert_any_call(
-            f"CANCELED ORDER for SYM2 - TRADER: {api_trader.user["Name"]} - ACCOUNT ID: {modifiedAccountID(api_trader.account_id)}"
+            f"CANCELED ORDER for SYM2 - TRADER: {api_trader.user['Name']} - ACCOUNT ID: {modifiedAccountID(api_trader.account_id)}"
         )
 
         # Verify that MongoDB updates were correctly prepared
@@ -1453,6 +1451,46 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             }
         ])
 
+    async def test_apply_bulk_updates_mongo_failures(self):
+        """Test that _apply_bulk_updates handles MongoDB failures gracefully."""
+
+        # Create an instance of Tasks
+        api_trader = ApiTrader(
+            user=self.user,
+            async_mongo=self.async_mongo,
+            push=self.push,
+            logger=self.logger,
+            account_id="test_account",
+            tdameritrade=self.tdameritrade,
+            quote_manager_pool=self.quote_manager_pool
+        )
+
+        # Mock bulk_write to raise an exception
+        api_trader.async_mongo.open_positions.bulk_write = AsyncMock(side_effect=Exception("Bulk write failed"))
+
+        # Mock insert_many for rejected and canceled orders to also raise exceptions
+        api_trader.async_mongo.rejected.insert_many = AsyncMock(side_effect=Exception("Insert rejected failed"))
+        api_trader.async_mongo.canceled.insert_many = AsyncMock(side_effect=Exception("Insert canceled failed"))
+
+        # Add fake updates to the queues
+        await api_trader.tasks.bulk_updates_queue.put(UpdateOne({}, {"$set": {"status": "TEST"}}))
+        await api_trader.tasks.rejected_inserts_queue.put({"Symbol": "SYM1", "Order_Status": "REJECTED"})
+        await api_trader.tasks.canceled_inserts_queue.put({"Symbol": "SYM2", "Order_Status": "CANCELED"})
+
+        # Call the method under test
+        await api_trader.tasks._apply_bulk_updates()
+
+        # Verify bulk_write was called and failed
+        api_trader.async_mongo.open_positions.bulk_write.assert_called_once()
+
+        # Verify rejected and canceled inserts were attempted but failed
+        api_trader.async_mongo.rejected.insert_many.assert_called_once()
+        api_trader.async_mongo.canceled.insert_many.assert_called_once()
+
+        # Verify error logging occurred for each failure
+        api_trader.logger.error.assert_any_call("Failed to execute bulk_write: Bulk write failed")
+        api_trader.logger.error.assert_any_call("Failed to insert rejected orders: Insert rejected failed")
+        api_trader.logger.error.assert_any_call("Failed to insert canceled orders: Insert canceled failed")
 
     def test_extractOCOchildren(self):
         # Mocking a specific order structure

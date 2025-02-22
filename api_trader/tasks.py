@@ -61,6 +61,10 @@ class Tasks:
         self.last_checkOCOpapertriggers_time = time.time()  # Track the last time checkOCOtriggers was run
         self.checkOCOpaper_interval = 10  # Run checkOCOtriggers once every 10 seconds (adjustable)
 
+        self.bulk_updates_queue = asyncio.Queue()
+        self.rejected_inserts_queue = asyncio.Queue()
+        self.canceled_inserts_queue = asyncio.Queue()
+
         super().__init__()
 
     async def run_tasks_with_exit_check(self):
@@ -302,9 +306,7 @@ class Tasks:
         """Checks OCO triggers (stop loss/take profit) to see if either one has filled.
         If so, closes the position in MongoDB accordingly.
         """
-        bulk_updates = []
-        rejected_inserts = []
-        canceled_inserts = []
+        batch_size = 100  # Number of positions to process per batch
 
         try:
             # Limit the fields and use cursor iteration to avoid loading everything into memory at once
@@ -340,44 +342,52 @@ class Tasks:
                 }
             )  # Only fetch necessary fields
 
-            async for position in cursor:
-                try:
-                    # Handle the different formats of childOrderStrategies (list or dict)
-                    child_orders = position.get("childOrderStrategies")
-                    if not child_orders:
-                        self.logger.warning(f"No childOrderStrategies found for position {position['Symbol']}")
-                        continue
+            while True:
+                positions = await cursor.to_list(length=batch_size)  # Fetch batch
+                if not positions:  # Stop when there are no more documents
+                    break
 
-                    # Convert to list if it's in a dict format
-                    if isinstance(child_orders, dict):
-                        child_orders = [child_orders]  # Convert to list for uniform processing
+                results = await asyncio.gather(
+                    *(self._process_position(position) for position in positions),
+                    return_exceptions=True
+                )
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        self.logger.error(f"Error processing position {positions[i]['Symbol']}: {result}")
 
-                    # Process child orders whether they are single or OCO type
-                    for child_order in child_orders:
-                        try:
-                            # Check if childOrderStrategies contains nested orders (OCO format)
-                            if "childOrderStrategies" in child_order:
-                                # Recursively process the OCO child orders
-                                for nested_order in child_order["childOrderStrategies"]:
-                                    await self._process_child_order(nested_order, position, bulk_updates, rejected_inserts, canceled_inserts)
-                            else:
-                                # Process regular child order
-                                await self._process_child_order(child_order, position, bulk_updates, rejected_inserts, canceled_inserts)
-                        except Exception as e:
-                            self.logger.error(f"Error processing child order: {child_order} - {e}")
-                except Exception as e:
-                    self.logger.error(f"Error processing position: {position} - {e}")
-
-            # Execute bulk updates and inserts asynchronously, but consider batching them
+            # Apply bulk updates at the end for efficiency
             try:
-                await self._apply_bulk_updates(bulk_updates, rejected_inserts, canceled_inserts)
+                await self._apply_bulk_updates()
             except Exception as e:
                 self.logger.error(f"Error applying bulk updates: {e}")
 
         except Exception as e:
             self.logger.error(f"Failed to fetch open positions: {e}")
 
-    async def _process_child_order(self, child_order, position, bulk_updates, rejected_inserts, canceled_inserts):
+    async def _process_position(self, position):
+        """Processes a single position and its child orders."""
+        try:
+            child_orders = position.get("childOrderStrategies")
+            if not child_orders:
+                self.logger.warning(f"No childOrderStrategies found for position {position['Symbol']}")
+                return
+
+            if isinstance(child_orders, dict):  # Ensure list format
+                child_orders = [child_orders]
+
+            for child_order in child_orders:
+                try:
+                    if "childOrderStrategies" in child_order:  # Handle nested OCO orders
+                        for nested_order in child_order["childOrderStrategies"]:
+                            await self._process_child_order(nested_order, position)
+                    else:
+                        await self._process_child_order(child_order, position)
+                except Exception as e:
+                    self.logger.error(f"Error processing child order: {child_order} - {e}")
+        except Exception as e:
+            self.logger.error(f"Error processing position: {position} - {e}")
+
+    async def _process_child_order(self, child_order, position):
         """Processes individual child orders and updates status."""
         order_id = child_order.get("Order_ID")
         if not order_id:
@@ -422,15 +432,25 @@ class Tasks:
             }
 
             if new_status == "REJECTED":
-                rejected_inserts.append(other)
+                await self.rejected_inserts_queue.put(other)
             else:
-                canceled_inserts.append(other)
+                await self.canceled_inserts_queue.put(other)
 
             self.logger.info(
                 f"{new_status.upper()} ORDER for {position['Symbol']} - "
                 f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
             )
         else:
+            # Get the existing status from the child order
+            current_status = child_order.get("Order_Status")
+
+            # Only update if the status has changed
+            if new_status == current_status:
+                self.logger.debug(f"Skipping update for Order_ID {order_id} (Status unchanged: {new_status})")
+                return
+            
+            self.logger.debug(f"Updating Order_ID {order_id} from {current_status} to {new_status}")
+
             # Use array filters to update the specific child order's status based on Order_ID
             filter_query = {
                 "Trader": self.user["Name"],
@@ -448,7 +468,7 @@ class Tasks:
             array_filters = [{"orderElem.Order_ID": order_id}]
 
             # Append to bulk_updates for later execution via bulk_write
-            bulk_updates.append(
+            await self.bulk_updates_queue.put(
                 UpdateOne(
                     filter_query,
                     update_query,
@@ -457,28 +477,45 @@ class Tasks:
                 )
             )
 
-    async def _apply_bulk_updates(self, bulk_updates, rejected_inserts, canceled_inserts):
-        """Executes bulk updates and inserts asynchronously."""
-        if bulk_updates:
-            try:
-                result = await self.async_mongo.open_positions.bulk_write(bulk_updates)
-                self.logger.info(f"Bulk update complete: {result.modified_count} documents modified.")
-            except Exception as e:
-                self.logger.error(f"Error during bulk update: {e}")
+    async def _apply_bulk_updates(self):
+        """Processes bulk updates, rejected orders, and canceled orders from queues with error handling."""
+        
+        try:
+            # Process bulk updates
+            bulk_updates = []
+            while not self.bulk_updates_queue.empty():
+                bulk_updates.append(await self.bulk_updates_queue.get())
 
-        if rejected_inserts:
-            try:
-                await self.async_mongo.rejected.insert_many(rejected_inserts)
-                self.logger.info(f"Inserted {len(rejected_inserts)} rejected orders.")
-            except Exception as e:
-                self.logger.error(f"Error inserting rejected orders: {e}")
+            if bulk_updates:
+                try:
+                    await self.async_mongo.open_positions.bulk_write(bulk_updates)
+                except Exception as e:
+                    self.logger.error(f"Failed to execute bulk_write: {e}")
 
-        if canceled_inserts:
-            try:
-                await self.async_mongo.canceled.insert_many(canceled_inserts)
-                self.logger.info(f"Inserted {len(canceled_inserts)} canceled orders.")
-            except Exception as e:
-                self.logger.error(f"Error inserting canceled orders: {e}")
+            # Process rejected orders
+            rejected_orders = []
+            while not self.rejected_inserts_queue.empty():
+                rejected_orders.append(await self.rejected_inserts_queue.get())
+
+            if rejected_orders:
+                try:
+                    await self.async_mongo.rejected.insert_many(rejected_orders)
+                except Exception as e:
+                    self.logger.error(f"Failed to insert rejected orders: {e}")
+
+            # Process canceled orders
+            canceled_orders = []
+            while not self.canceled_inserts_queue.empty():
+                canceled_orders.append(await self.canceled_inserts_queue.get())
+
+            if canceled_orders:
+                try:
+                    await self.async_mongo.canceled.insert_many(canceled_orders)
+                except Exception as e:
+                    self.logger.error(f"Failed to insert canceled orders: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Unexpected error in _apply_bulk_updates: {e}")
 
     @exception_handler
     def extractOCOchildren(self, spec_order):
