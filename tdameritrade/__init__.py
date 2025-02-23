@@ -313,34 +313,29 @@ class TDAmeritrade:
             symbol (str): Stock symbol.
 
         Returns:
-            dict: Stock quote in JSON format, or None if an error occurs.
+            httpx.Response: Raw response object from the API, or None if no request was made.
         """
         if not symbol:
             self.logger.warning("Symbol in getQuoteAsync was empty '%s'", symbol)
             return None
 
-        isValid = await self.checkTokenValidityAsync()
+        is_valid = await self.checkTokenValidityAsync()
 
-        if isValid:
-            try:
-                if "/" in symbol:
-                    response = await self.async_client.get_quotes(symbol, fields=fields)
-                else:
-                    response = await self.async_client.get_quote(symbol, fields=fields)
-
-                # Exit early on HTTP error
-                if response is None or response.status_code != 200:
-                    self.logger.error(f"Failed to retrieve quote for symbol: {symbol}. HTTP Status: {response.status_code if response else 'None'} ({modifiedAccountID(self.account_id)})")
-                    return None
-
-                # Parse the JSON only if it's a successful response
-                return response.json()
-
-            except Exception as e:
-                self.logger.error(f"An error occurred while retrieving the quote for symbol: {symbol}. Error: {e} ({modifiedAccountID(self.account_id)})")
-                return None
-        else:
+        if not is_valid:
             return None
+
+        try:
+            # Use appropriate API method based on symbol format
+            if "/" in symbol:
+                response = await self.async_client.get_quotes(symbol, fields=fields)
+            else:
+                response = await self.async_client.get_quote(symbol, fields=fields)
+
+            return response  # Return raw response, let caller handle errors
+
+        except Exception as e:
+            self.logger.error(f"An error occurred while retrieving the quote for symbol: {symbol}. Error: {e} ({modifiedAccountID(self.account_id)})")
+            return httpx.Response(status_code=500, json={"error": str(e)})  # Return a simulated 500 error
 
     @exception_handler
     async def start_stream(self, symbols, quote_handler, max_retries=5, stop_event=None, initialized_event=None, reset_event=None, message_rate_limit=1):

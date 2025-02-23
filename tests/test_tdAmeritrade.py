@@ -172,13 +172,8 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Call the method under test without passing the 'fields' parameter
         result = await self.td_ameritrade.getQuoteAsync("INVALID_SYMBOL")
 
-        # Assertions
-        self.logger_mock.error.assert_called_once()
-        self.assertIsNone(result, "Expected None for non-existent symbol")
-
         # Expect the 'get_quote' method to be called with the symbol and the default 'fields' value
         mock_client.get_quote.assert_called_once_with("INVALID_SYMBOL", fields=schwabBaseClient.Quote.Fields.QUOTE)  # Adjusted to expect 'fields'
-
 
     @patch('tdameritrade.TDAmeritrade.checkTokenValidityAsync')
     async def test_getAccount_successful(self, mock_checkTokenValidity):
@@ -262,7 +257,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         result = await self.td_ameritrade.getQuoteAsync('AAPL')
 
         # Assert the expected result
-        self.assertEqual(result, {'symbol': 'AAPL', 'price': 150})
+        self.assertEqual(result.json(), {'symbol': 'AAPL', 'price': 150})
         mock_checkTokenValidity.assert_called_once()
         mock_client.get_quote.assert_called_once_with('AAPL', fields=schwabBaseClient.Quote.Fields.QUOTE)
 
@@ -295,7 +290,10 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
 
         # Create a mock client and simulate an HTTP error response
         mock_client = AsyncMock()
-        mock_client.get_quote.return_value = AsyncMock(status_code=404)
+        mock_response = MagicMock()
+        mock_response.status_code = 404  # Simulate not found
+        mock_response.json.return_value = {'error': 'Order not found'}
+        mock_client.get_quote.return_value = mock_response
 
         # Set the mock client to the TDAmeritrade instance
         self.td_ameritrade.async_client = mock_client
@@ -304,10 +302,8 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         result = await self.td_ameritrade.getQuoteAsync('AAPL')
 
         # Assert that None is returned
-        self.assertIsNone(result)
-
-        # Ensure the logger logs the error
-        self.logger_mock.error.assert_called_once_with(f"Failed to retrieve quote for symbol: AAPL. HTTP Status: 404 ({modifiedAccountID(self.account_id)})")
+        self.assertEqual(result.status_code, 404)
+        self.assertEqual(result.json(), {'error': 'Order not found'})
 
         mock_checkTokenValidity.assert_called_once()
         mock_client.get_quote.assert_called_once_with('AAPL', fields=schwabBaseClient.Quote.Fields.QUOTE)
@@ -328,8 +324,8 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Call the method with a valid symbol
         result = await self.td_ameritrade.getQuoteAsync('AAPL')
 
-        # Assert that None is returned
-        self.assertIsNone(result)
+        # Assert that 500 is returned
+        self.assertEqual(result.status_code, 500)
 
         # Ensure the logger logs the error
         self.logger_mock.error.assert_called_once_with(f"An error occurred while retrieving the quote for symbol: AAPL. Error: Network error ({modifiedAccountID(self.account_id)})")
@@ -370,7 +366,7 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         result = await self.td_ameritrade.getQuoteAsync('AAPL/MSFT')
 
         # Assert the expected result
-        self.assertEqual(result, {'AAPL/MSFT': {'symbol': 'AAPL/MSFT', 'price': 200}})
+        self.assertEqual(result.json(), {'AAPL/MSFT': {'symbol': 'AAPL/MSFT', 'price': 200}})
         mock_checkTokenValidity.assert_called_once()
         mock_client.get_quotes.assert_called_once_with('AAPL/MSFT', fields=schwabBaseClient.Quote.Fields.QUOTE)
 

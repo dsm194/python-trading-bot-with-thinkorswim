@@ -267,7 +267,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Mock trade data and strategy object
         trade_data = {
-            "Symbol": list(mock_quotes_data.keys())[0],
+            "Symbol": list(mock_quotes_data.json().keys())[0],
             "Strategy": "test_strategy",
             "Side": "SELL",
             "Qty": 10,
@@ -1957,7 +1957,7 @@ def create_mock_strategies(num_positions):
         for i in range(num_positions)
     ]
 
-def create_mock_quotes(num_positions):
+def create_mock_quotes(num_positions, status_code=200):
     # Generates both the quotes dictionary and individual quote structure
     quotes_dict = {}
     for i in range(num_positions):
@@ -1971,7 +1971,13 @@ def create_mock_quotes(num_positions):
                 "otherQuoteData": "value"  # Include any other expected fields here
             }
         }
-    return quotes_dict
+
+    # Wrap the dictionary in a MagicMock and set the status_code property
+    mock_response = MagicMock()
+    mock_response.status_code = status_code
+    mock_response.json.return_value = quotes_dict  # Make .json() return the mock quotes
+
+    return mock_response
 
 def generate_random_symbol():
     """Generate a random stock symbol (e.g., AAPL, MSFT)."""

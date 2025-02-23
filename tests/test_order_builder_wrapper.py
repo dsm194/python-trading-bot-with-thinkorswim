@@ -341,16 +341,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_standard_order_open_position(self, mock_init):
 
-        # Set up the mock behavior for tdameritrade.getQuote()
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
-
         # Prepare mock data for the test
         trade_data = {
             "Symbol": "AAPL",
@@ -374,6 +364,19 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
+        api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
+
         api_trader.tdameritrade.getQuoteAsync = AsyncMock()
         api_trader.tdameritrade.getQuoteAsync.side_effect = [
             mock_quote_response  # Successful quote response
@@ -391,16 +394,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_standard_order_close_position(self, mock_init):
-
-        # Set up the mock behavior for tdameritrade.getQuote()
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
 
         trade_data = {
             'Symbol': 'AAPL',
@@ -424,6 +417,19 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = MagicMock()
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
+        api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
+
         api_trader.tdameritrade.getQuoteAsync = AsyncMock()
         api_trader.tdameritrade.getQuoteAsync.side_effect = [
             mock_quote_response  # Successful quote response
@@ -440,15 +446,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_blocked_when_exceeding_max_position_size(self, mock_init):
-        # Set up the mock behavior for tdameritrade.getQuoteAsync
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
 
         trade_data = {
             "Symbol": "AAPL",
@@ -471,6 +468,17 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = {"Name": "TestUser"}
         api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
 
         # Mock tdameritrade.getQuoteAsync to return mock_quote_response
         api_trader.tdameritrade = MagicMock()
@@ -512,15 +520,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_processed_when_within_max_position_size(self, mock_init):
-        # Mock quote response
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
 
         trade_data = {
             "Symbol": "AAPL",
@@ -543,6 +542,17 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = {"Name": "TestUser"}
         api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
 
         # Mock tdameritrade.getQuoteAsync to return mock_quote_response
         api_trader.tdameritrade = MagicMock()
@@ -580,15 +590,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_processed_when_at_exact_max_position_size(self, mock_init):
-        # Mock quote response
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
 
         trade_data = {
             "Symbol": "AAPL",
@@ -612,6 +613,17 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.user = {"Name": "TestUser"}
         api_trader.account_id = "test_account"
         api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
 
         # Mock tdameritrade.getQuoteAsync to return mock_quote_response
         api_trader.tdameritrade = MagicMock()
@@ -649,15 +661,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_order_processed_without_max_position_size(self, mock_init):
-        # Set up the mock behavior for tdameritrade.getQuote()
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 150.00,  # Mock buy price
-                    "bidPrice": 148.00  # Mock sell price
-                }
-            }
-        }
 
         trade_data = {
             "Symbol": "AAPL",
@@ -682,6 +685,17 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
 
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 150.00,  # Mock buy price
+                    "bidPrice": 148.00  # Mock sell price
+                }
+            }
+        }
+
         api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Set current allocated and mock new order size
@@ -699,16 +713,6 @@ class TestOrderBuilderWrapper(unittest.TestCase):
 
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     async def async_test_zero_price_raises_value_error(self, mock_init):
-
-         # Set up the mock behavior for tdameritrade.getQuote()
-        mock_quote_response = {
-            "AAPL": {
-                "quote": {
-                    "askPrice": 0.00,  # Mock buy price
-                    "bidPrice": 0.00  # Mock sell price
-                }
-            }
-        }
 
         # Prepare mock data for the test
         trade_data = {
@@ -734,6 +738,18 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         api_trader.account_id = MagicMock()
         api_trader.tdameritrade = MagicMock()
         api_trader.logger = MagicMock()
+
+        mock_quote_response = MagicMock()
+        mock_quote_response.status_code = 200
+        mock_quote_response.json.return_value = {
+            "AAPL": {
+                "quote": {
+                    "askPrice": 0.00,  # Mock buy price
+                    "bidPrice": 0.00  # Mock sell price
+                }
+            }
+        }
+
         api_trader.tdameritrade.getQuoteAsync = AsyncMock(side_effect = [mock_quote_response])
 
         # Assert that the ValueError is raised when price is zero

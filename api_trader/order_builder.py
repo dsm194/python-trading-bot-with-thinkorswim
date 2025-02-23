@@ -12,6 +12,7 @@ from schwab.orders.options import (option_buy_to_open_limit,
 
 from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
 from assets.helper_functions import getUTCDatetime
+from tdameritrade import TDAmeritrade
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,7 +33,7 @@ class AssetType:
 
 class OrderBuilderWrapper:
 
-    def __init__(self, logger, user, account_id, async_mongo, tdameritrade):
+    def __init__(self, logger, user, account_id, async_mongo, tdameritrade: TDAmeritrade):
         """
         Initialize with an optional mongo for fetching open_positions.
         """
@@ -193,14 +194,47 @@ class OrderBuilderWrapper:
                 "Option_Type": trade_data["Option_Type"]
             })
 
-        # GET QUOTE FOR SYMBOL
-        resp = await self.tdameritrade.getQuoteAsync(symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"])
+        # Default price to 0 (in case of missing symbols)
+        price = 0
 
-        # if we didn't find the symbol, exit - we can't create the order
-        if resp is None:
+        # Determine which symbol key to use
+        quote_symbol = symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]
+
+        # GET QUOTE FOR SYMBOL
+        response = await self.tdameritrade.getQuoteAsync(quote_symbol)
+
+        if response is None:
+            self.logger.error("No response received from getQuoteAsync")
             return None, None
 
-        price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][BUY_PRICE]) if side in ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"] else float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
+        if response.status_code == 404:
+            # Assume the option is expired or stock delisted; set price to 0 but continue execution
+            self.logger.warning(f"Symbol not found (likely expired/delisted): {quote_symbol}. Assuming price = 0.")
+        else:
+            if response.status_code != 200:
+                # Handle other error codes
+                error_messages = {
+                    500: f"Server error retrieving quote: {quote_symbol} - {response.text}"
+                }
+                self.logger.error(error_messages.get(response.status_code, f"Unexpected response {response.status_code}: {quote_symbol} - {response.text}"))
+                return None, None
+
+            # Parse JSON safely if the response is valid
+            try:
+                quote_data = response.json()
+                quote_entry = quote_data.get(quote_symbol, {}).get('quote', {})
+
+                # Determine the price key based on the trade side
+                price_key = BUY_PRICE if side in ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"] else SELL_PRICE
+
+                # Extract and convert the price
+                price = float(quote_entry[price_key])
+
+                self.logger.info(f"Successfully retrieved quote for {quote_symbol}")
+
+            except (KeyError, ValueError, TypeError) as e:
+                self.logger.error(f"Error extracting price for {quote_symbol}: {e}")
+                return None, None
 
         # Removed this logic - I don't see any issue w/ OCO order using correct ask/bid prices
         # OCO ORDER NEEDS TO USE ASK PRICE FOR ISSUE WITH THE ORDER BEING TERMINATED UPON BEING PLACED
@@ -208,13 +242,13 @@ class OrderBuilderWrapper:
         #     price = float(resp[symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]]['quote'][SELL_PRICE])
 
         price = round(price, 2) if price >= 1 else round(price, 4)
-        priceAsString = str(price)
+        price_as_string = str(price)
 
         # IF OPENING A POSITION
         if direction == "OPEN POSITION":
 
             if price == 0:
-                self.logger.error(f"Price is zero for asset - cannot calculate shares: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; {side}; SYMBOL: {symbol}; PRICE: {price}; QUOTE {resp};")
+                self.logger.error(f"Price is zero for asset - cannot calculate shares: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; {side}; SYMBOL: {symbol}; PRICE: {price}; QUOTE {quote_data};")
                 raise ValueError("Price cannot be zero.")
 
             position_size = int(strategy_object["Position_Size"])
@@ -235,9 +269,9 @@ class OrderBuilderWrapper:
 
             if strategy_object["Active"] and shares > 0:
                 if asset_type == AssetType.EQUITY:
-                    order = equity_buy_limit(symbol=trade_data["Symbol"], quantity=shares, price=priceAsString)
+                    order = equity_buy_limit(symbol=trade_data["Symbol"], quantity=shares, price=price_as_string)
                 else:
-                    order = option_buy_to_open_limit(symbol=trade_data["Pre_Symbol"], quantity=shares, price=priceAsString)
+                    order = option_buy_to_open_limit(symbol=trade_data["Pre_Symbol"], quantity=shares, price=price_as_string)
 
                 obj.update({
                     "Qty": shares,
@@ -255,9 +289,9 @@ class OrderBuilderWrapper:
         elif direction == "CLOSE POSITION":
 
             if asset_type == AssetType.EQUITY:
-                order = equity_sell_limit(symbol=trade_data["Symbol"], quantity=trade_data["Qty"], price=priceAsString)
+                order = equity_sell_limit(symbol=trade_data["Symbol"], quantity=trade_data["Qty"], price=price_as_string)
             else:
-                order = option_sell_to_close_limit(symbol=trade_data["Pre_Symbol"], quantity=trade_data["Qty"], price=priceAsString)
+                order = option_sell_to_close_limit(symbol=trade_data["Pre_Symbol"], quantity=trade_data["Qty"], price=price_as_string)
 
             obj.update({
                 "Entry_Price": trade_data["Entry_Price"],
