@@ -6,6 +6,7 @@
 import asyncio
 from zoneinfo import ZoneInfo
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -13,6 +14,8 @@ import os.path
 import os
 from datetime import datetime
 import re
+
+import config_loader  # noqa: F401
 
 THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
@@ -29,9 +32,12 @@ class Gmail:
 
         self.service = None
 
-        self.token_file = f"{THIS_FOLDER}/creds/token.json"
-
-        self.creds_file = f"{THIS_FOLDER}/creds/credentials.json"
+        self.token_file = os.getenv(
+            "GMAIL_TOKEN_PATH", f"{THIS_FOLDER}/creds/token.json"
+        )
+        self.creds_file = os.getenv(
+            "GMAIL_CREDENTIALS_PATH", f"{THIS_FOLDER}/creds/credentials.json"
+        )
 
     def connect(self):
         """ METHOD SETS ATTRIBUTES AND CONNECTS TO GMAIL API
@@ -53,19 +59,21 @@ class Gmail:
                         self.token_file, self.SCOPES)
 
             if not self.creds:
-
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.creds_file, self.SCOPES)
-
-                self.creds = flow.run_local_server(port=0)
+                self.creds = self._run_auth_flow()
 
             elif self.creds and self.creds.expired and self.creds.refresh_token:
-
-                self.creds.refresh(Request())
+                try:
+                    self.creds.refresh(Request())
+                except RefreshError:
+                    self.logger.warning(
+                        "Gmail refresh token was rejected; starting interactive authorization."
+                    )
+                    self.creds = self._run_auth_flow()
 
             if self.creds != None:
 
                 # Save the credentials for the next run
+                os.makedirs(os.path.dirname(self.token_file), exist_ok=True)
                 with open(self.token_file, 'w') as token:
 
                     token.write(self.creds.to_json())
@@ -86,6 +94,12 @@ class Gmail:
                 f"FAILED TO CONNECT TO GMAIL! - {e}\n", extra={'log': False})
 
             return False
+
+    def _run_auth_flow(self):
+        flow = InstalledAppFlow.from_client_secrets_file(
+            self.creds_file, self.SCOPES
+        )
+        return flow.run_local_server(port=0)
 
     def translate_option_symbol(self, symbol: str) -> str:
         """

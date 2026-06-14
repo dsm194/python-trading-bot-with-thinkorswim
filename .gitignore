@@ -1,7 +1,10 @@
 config.env
+config.secrets.env
 .vscode
 *__pycache__
 *.txt
+!config/no_trade_dates.txt
+!requirements.txt
 .VSCodeCounter
 token*.json
 credentials.json

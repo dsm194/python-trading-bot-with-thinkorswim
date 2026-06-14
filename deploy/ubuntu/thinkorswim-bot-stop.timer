@@ -1,0 +1,10 @@
+[Unit]
+Description=Stop the Thinkorswim bot at 4:00 PM Eastern on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:00:00 America/New_York
+Persistent=false
+Unit=thinkorswim-bot-stop.service
+
+[Install]
+WantedBy=timers.target

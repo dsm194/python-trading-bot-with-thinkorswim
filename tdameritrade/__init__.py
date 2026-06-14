@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import httpx
 import websockets
-from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
 from schwab.auth import __make_update_token_func as make_update_token_func
 from schwab.auth import (client_from_received_url, client_from_token_file,
@@ -18,11 +17,12 @@ from schwab.utils import Utils
 from assets.exception_handler import exception_handler
 from assets.helper_functions import getUTCDatetime, modifiedAccountID
 
-load_dotenv(dotenv_path="config.env")
+import config_loader  # noqa: F401
 
 API_KEY = os.getenv("API_KEY")
 APP_SECRET = os.getenv("APP_SECRET")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
+SCHWAB_TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH")
 
 class TDAmeritrade:
 
@@ -133,7 +133,7 @@ class TDAmeritrade:
 
         # Retrieve user data and refresh or generate a new token
         user = await self.async_mongo.users.find_one({"Name": self.user["Name"]})
-        token_path = user["Accounts"][self.account_id]["token_path"]
+        token_path = SCHWAB_TOKEN_PATH or user["Accounts"][self.account_id]["token_path"]
 
         if os.path.isfile(token_path):
             self.async_client = client_from_token_file(token_path, API_KEY, APP_SECRET, asyncio=True)

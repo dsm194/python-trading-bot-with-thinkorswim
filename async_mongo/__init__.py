@@ -1,16 +1,10 @@
-from pathlib import Path
 from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
 import os
 import certifi
 
+import config_loader  # noqa: F401
+
 ca = certifi.where()
-
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 MONGO_URI = os.getenv('MONGO_URI')
 

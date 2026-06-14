@@ -1,14 +1,8 @@
 from pprint import pprint
-from dotenv import load_dotenv
 import requests
 import os
-from pathlib import Path
 
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
+import config_loader  # noqa: F401
 
 PUSH_API_KEY = os.getenv('PUSH_API_KEY')
 

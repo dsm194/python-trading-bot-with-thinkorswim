@@ -2,7 +2,10 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
+
+import config_loader  # noqa: F401
 
 from api_trader import ApiTrader
 from api_trader.quote_manager_pool import QuoteManagerPool
@@ -22,7 +25,14 @@ class Main:
         self.running = True
         self.stop_event = asyncio.Event()  # NEW: Added asyncio.Event for graceful stop signaling
        # Set the stop_signal_file path to the directory of the current script
-        self.stop_signal_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp', 'stop_signal.txt')
+        self.stop_signal_file = os.getenv(
+            "STOP_SIGNAL_FILE",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "tmp",
+                "stop_signal.txt",
+            ),
+        )
 
          # Clean up leftover stop signal file from previous runs
         if os.path.isfile(self.stop_signal_file):
@@ -231,6 +241,9 @@ class Main:
 async def main_async():
     """Main async function to execute logic."""
     main = Main()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(main.stop()))
 
     connected = await main.connectAll()
 

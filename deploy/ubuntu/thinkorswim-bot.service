@@ -1,0 +1,25 @@
+[Unit]
+Description=Thinkorswim email trading bot
+After=network-online.target orfa-bot-live-paper.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orfa
+Group=orfa
+WorkingDirectory=/opt/thinkorswim_bot/current
+EnvironmentFile=/etc/thinkorswim_bot/thinkorswim_bot.env
+EnvironmentFile=/etc/thinkorswim_bot/thinkorswim_bot.secrets.env
+ExecCondition=/usr/bin/systemctl is-inactive --quiet orfa-bot-live-paper.service
+ExecStart=/opt/thinkorswim_bot/current/scripts/start_bot_session.sh
+ExecStop=/usr/bin/touch /opt/thinkorswim_bot/shared/run/stop_signal.txt
+Restart=no
+TimeoutStopSec=45
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

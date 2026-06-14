@@ -2,9 +2,7 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 
-from dotenv import load_dotenv
 from schwab.orders.common import first_triggers_second
 from schwab.orders.equities import equity_buy_limit, equity_sell_limit
 from schwab.orders.options import (option_buy_to_open_limit,
@@ -14,11 +12,7 @@ from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
 from assets.helper_functions import getUTCDatetime
 from tdameritrade import TDAmeritrade
 
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
+import config_loader  # noqa: F401
 
 BUY_PRICE = os.getenv('BUY_PRICE')
 SELL_PRICE = os.getenv('SELL_PRICE')

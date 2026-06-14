@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop the Thinkorswim email trading bot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl stop thinkorswim-bot.service

@@ -1,8 +1,7 @@
 import asyncio
 import os
-from pathlib import Path
 
-from dotenv import load_dotenv
+import config_loader  # noqa: F401
 
 from api_trader.order_builder import OrderBuilderWrapper
 from api_trader.position_updater import PositionUpdater
@@ -12,13 +11,6 @@ from assets.exception_handler import exception_handler
 from assets.helper_functions import (assign_order_ids, convertStringToDatetime,
                                      getUTCDatetime, modifiedAccountID)
 from tdameritrade import TDAmeritrade
-
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
-
 
 class ApiTrader(OrderBuilderWrapper):
 

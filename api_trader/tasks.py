@@ -3,11 +3,9 @@
 import asyncio
 import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from dotenv import load_dotenv
 from pymongo import UpdateOne
 
 from assets.exception_handler import exception_handler
@@ -16,13 +14,6 @@ from assets.helper_functions import (getUTCDatetime, modifiedAccountID,
 
 if TYPE_CHECKING:
     from api_trader import ApiTrader  # Forward declaration to avoid circular import
-
-
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
 
 
 class Tasks:

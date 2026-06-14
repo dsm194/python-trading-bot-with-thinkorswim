@@ -1,0 +1,8 @@
+[Unit]
+Description=Start Thinkorswim bot five minutes after ORFA completes
+After=orfa-bot-live-paper.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sleep 300
+ExecStart=/usr/bin/systemctl start thinkorswim-bot.service

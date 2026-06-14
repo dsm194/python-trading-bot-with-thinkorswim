@@ -1,5 +1,20 @@
 # Python Trading Bot w/ Thinkorswim
 
+## Current Operations
+
+This fork now uses layered configuration and an immutable Ubuntu deployment:
+
+- Checked-in profiles: `config/env_profiles/.env.dev` and `.env.prod`
+- Local secrets: `config.secrets.env` (ignored by Git)
+- Secret template: `config.secrets.env.example`
+- Ubuntu deployment and systemd handoff: `deploy/ubuntu/README.md`
+- Weekly auth workflow: `scripts/refresh_and_sync_credentials.sh`
+
+The old combined `config.env` file is supported temporarily as a migration
+fallback. Move its secret values into `config.secrets.env`; profile values are
+already stored in source control. Do not add real credentials to a checked-in
+file.
+
 ## Description
 
 - This automated trading bot utilizes TDAmeritrades API, Thinkorswim Alert System, Gmail API , and MongoDB to place trades, both Equity and Options, dynamically. _**This bot works for LONG and SHORT positions**_

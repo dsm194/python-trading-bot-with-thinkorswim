@@ -2,16 +2,9 @@ import logging
 import os
 import random
 from datetime import datetime, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
-
-THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-path = Path(THIS_FOLDER)
-
-load_dotenv(dotenv_path=f"{path.parent}/config.env")
+import config_loader  # noqa: F401
 
 TIMEZONE = os.getenv('TIMEZONE')
 
@@ -113,4 +106,3 @@ def assign_order_ids(order_strategy, seen=None):
         
         for child in order_strategy["childOrderStrategies"]:
             assign_order_ids(child, seen)
-
