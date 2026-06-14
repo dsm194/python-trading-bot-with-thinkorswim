@@ -188,7 +188,16 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Mock dependencies
         parent_order_mock = MagicMock()
-        mock_standard_order = AsyncMock(return_value=(parent_order_mock, {}))
+        mock_standard_order = AsyncMock(
+            return_value=(
+                parent_order_mock,
+                {
+                    "Asset_Type": "EQUITY",
+                    "Qty": 5,
+                    "Entry_Price": 100,
+                },
+            )
+        )
         mock_place_order = AsyncMock(return_value={"Order_ID": "12345"})
         mock_queue_order = AsyncMock()
         quote_manager_pool = MagicMock()
@@ -212,6 +221,9 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.tdameritrade.placeTDAOrderAsync = mock_place_order
         api_trader.standardOrder = mock_standard_order
         api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_OPENING_ORDERS_ENABLED = True
+        api_trader.MAX_LIVE_SESSION_OPEN_NOTIONAL = 1000
+        api_trader.live_session_open_notional = 0
 
         # Call method: Open Position Scenario
         await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
@@ -246,6 +258,52 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_place_order.call_count, 1)  # Should be called only once in live mode
         mock_queue_order.assert_called()  # Paper trading still enqueues the order
 
+    async def test_send_order_blocks_disarmed_live_open(self):
+        api_trader = ApiTrader.__new__(ApiTrader)
+        api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_OPENING_ORDERS_ENABLED = False
+        api_trader.logger = MagicMock()
+        api_trader.standardOrder = AsyncMock()
+
+        await api_trader.sendOrder(
+            {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY"},
+            {"Order_Type": "STANDARD"},
+            "OPEN POSITION",
+        )
+
+        api_trader.standardOrder.assert_not_called()
+        api_trader.logger.critical.assert_called_once()
+
+    async def test_send_order_blocks_live_open_above_session_limit(self):
+        api_trader = ApiTrader.__new__(ApiTrader)
+        api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_OPENING_ORDERS_ENABLED = True
+        api_trader.MAX_LIVE_SESSION_OPEN_NOTIONAL = 500
+        api_trader.live_session_open_notional = 0
+        api_trader.user = {}
+        api_trader.account_id = "test_account"
+        api_trader.logger = MagicMock()
+        api_trader.tdameritrade = MagicMock()
+        api_trader.tdameritrade.placeTDAOrderAsync = AsyncMock()
+        api_trader.standardOrder = AsyncMock(
+            return_value=(
+                MagicMock(),
+                {
+                    "Asset_Type": "EQUITY",
+                    "Qty": 10,
+                    "Entry_Price": 100,
+                },
+            )
+        )
+
+        await api_trader.sendOrder(
+            {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY"},
+            {"Order_Type": "STANDARD"},
+            "OPEN POSITION",
+        )
+
+        api_trader.tdameritrade.placeTDAOrderAsync.assert_not_called()
+        api_trader.logger.critical.assert_called_once()
 
     @patch('api_trader.ApiTrader.queueOrder')
     async def test_send_order_paper(self, mock_queue_order):

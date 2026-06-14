@@ -131,6 +131,25 @@ crontab -e
 Do not enable `thinkorswim-bot.service` at boot. It is started by the ORFA
 handoff or manually by an operator.
 
+## Live Trading Interlock
+
+Production deploys with live opening orders disabled:
+
+```dotenv
+LIVE_OPENING_ORDERS_ENABLED=False
+MAX_LIVE_SESSION_OPEN_NOTIONAL=1000
+```
+
+Mongo's `Account_Position=Live` is not sufficient to open a new live position.
+The environment switch must also be exactly `True`, and cumulative opening
+notional during that bot process must remain within the configured ceiling.
+Live closing orders remain permitted while opening orders are disarmed.
+
+For an initial observation session, leave the switch disabled and inspect the
+logs for blocked opening orders. Arm it only by editing
+`config/env_profiles/.env.prod`, committing the deliberate change, and
+redeploying.
+
 ## Logs
 
 The application writes severity-specific logs under:

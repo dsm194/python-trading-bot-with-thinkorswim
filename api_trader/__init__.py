@@ -29,6 +29,13 @@ class ApiTrader(OrderBuilderWrapper):
 
             self.RUN_TASKS = os.getenv('RUN_TASKS') == "True"
             self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
+            self.LIVE_OPENING_ORDERS_ENABLED = (
+                os.getenv("LIVE_OPENING_ORDERS_ENABLED", "False") == "True"
+            )
+            self.MAX_LIVE_SESSION_OPEN_NOTIONAL = float(
+                os.getenv("MAX_LIVE_SESSION_OPEN_NOTIONAL", "0")
+            )
+            self.live_session_open_notional = 0.0
 
             # Instance variables
             self.user = user
@@ -65,6 +72,11 @@ class ApiTrader(OrderBuilderWrapper):
             self.logger.info(
                 f"RUNNING {self.user['Accounts'][str(self.account_id)]['Account_Position'].upper()} TRADER ({modifiedAccountID(self.account_id)})\n"
             )
+            if self.RUN_LIVE_TRADER and not self.LIVE_OPENING_ORDERS_ENABLED:
+                self.logger.critical(
+                    "LIVE account %s is running with opening orders DISARMED.",
+                    modifiedAccountID(self.account_id),
+                )
 
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
@@ -89,6 +101,18 @@ class ApiTrader(OrderBuilderWrapper):
         side = trade_data["Side"]
         order_type = strategy_object["Order_Type"]
 
+        if (
+            self.RUN_LIVE_TRADER
+            and direction == "OPEN POSITION"
+            and not self.LIVE_OPENING_ORDERS_ENABLED
+        ):
+            self.logger.critical(
+                "Live opening order blocked for %s: "
+                "LIVE_OPENING_ORDERS_ENABLED is not True.",
+                symbol,
+            )
+            return
+
         # Generate the order and object based on the order type
         if order_type == "STANDARD":
             order, obj = await self.standardOrder(
@@ -108,6 +132,28 @@ class ApiTrader(OrderBuilderWrapper):
 
         # Place live trade orders
         if self.RUN_LIVE_TRADER:
+            if direction == "OPEN POSITION":
+                multiplier = 100 if obj["Asset_Type"] == "OPTION" else 1
+                order_notional = (
+                    float(obj["Qty"]) * float(obj["Entry_Price"]) * multiplier
+                )
+                projected_notional = (
+                    self.live_session_open_notional + order_notional
+                )
+
+                if (
+                    self.MAX_LIVE_SESSION_OPEN_NOTIONAL <= 0
+                    or projected_notional > self.MAX_LIVE_SESSION_OPEN_NOTIONAL
+                ):
+                    self.logger.critical(
+                        "Live opening order blocked for %s: projected session "
+                        "notional $%.2f exceeds configured limit $%.2f.",
+                        symbol,
+                        projected_notional,
+                        self.MAX_LIVE_SESSION_OPEN_NOTIONAL,
+                    )
+                    return
+
             try:
                 order_details = await self.tdameritrade.placeTDAOrderAsync(order)
 
@@ -133,6 +179,8 @@ class ApiTrader(OrderBuilderWrapper):
                 # Update order object with live trade details
                 obj.update(order_details)
                 obj["Account_Position"] = "Live"
+                if direction == "OPEN POSITION":
+                    self.live_session_open_notional = projected_notional
 
             except Exception as e:
                 self.logger.error(
