@@ -236,64 +236,6 @@ class Gmail:
 
         return trade_data
 
-    # def getEmails(self):
-    #     """ METHOD RETRIEVES EMAILS FROM INBOX, ADDS EMAIL TO TRASH FOLDER, AND ADD THEIR CONTENT TO payloads LIST TO BE EXTRACTED.
-
-    #     Returns:
-    #         [dict]: LIST RETURNED FROM extractSymbolsFromEmails METHOD
-    #     """
-
-    #     def convert_to_utc_with_timezone(local_hour, local_minute, timezone_str):
-    #         """Convert local time to UTC based on a given timezone."""
-    #         local_tz = ZoneInfo(timezone_str)
-    #         # Create a local datetime object
-    #         local_dt = datetime.now(local_tz).replace(
-    #             hour=local_hour, minute=local_minute, second=0, microsecond=0
-    #         )
-    #         # Convert to UTC
-    #         utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
-    #         return utc_dt
-        
-    #     payloads = []
-
-    #     # Convert the local time range to UTC
-    #     start_time_utc = convert_to_utc_with_timezone(6, 31, "PST8PDT")
-    #     end_time_utc = convert_to_utc_with_timezone(12, 59, "PST8PDT")
-        
-    #     # Gmail API requires RFC3339 format
-    #     query = f'after:{int(start_time_utc.timestamp())} before:{int(end_time_utc.timestamp())}'    
-
-    #     try:
-
-    #         # GETS LIST OF ALL EMAILS, filtered to standard market hours
-    #         results = self.service.users().messages().list(userId='me', q=query).execute()
-
-    #         if results['resultSizeEstimate'] != 0:
-
-    #             # {'id': '173da9a232284f0f', 'threadId': '173da9a232284f0f'}
-    #             for message in results["messages"]:
-
-    #                 result = self.service.users().messages().get(
-    #                     id=message["id"], userId="me", format="metadata").execute()
-
-    #                 for payload in result['payload']["headers"]:
-
-    #                     if payload["name"] == "Subject":
-
-    #                         payloads.append(payload["value"].strip())
-
-    #                 # MOVE EMAIL TO TRASH FOLDER
-    #                 self.service.users().messages().trash(
-    #                     userId='me', id=message["id"]).execute()
-
-    #     except Exception as e:
-
-    #         self.logger.error(f"{__class__.__name__} - {e}")
-
-    #     finally:
-
-    #         return self.extractSymbolsFromEmails(payloads)
-
     async def getEmails(self):
         """
         Retrieves emails from the inbox within a specific time range, processes their content, and moves them to the trash.
@@ -315,8 +257,10 @@ class Gmail:
             return utc_dt
 
         # Convert the local time range to UTC
-        start_time_utc = convert_to_utc_with_timezone(6, 31, "PST8PDT")
-        end_time_utc = convert_to_utc_with_timezone(12, 59, "PST8PDT")
+        # start_time_utc = convert_to_utc_with_timezone(6, 31, "PST8PDT")
+        # end_time_utc = convert_to_utc_with_timezone(12, 59, "PST8PDT")
+        start_time_utc = convert_to_utc_with_timezone(6, 31, "US/Pacific")
+        end_time_utc = convert_to_utc_with_timezone(12, 59, "US/Pacific")
 
         # Gmail API requires RFC3339 format
         query = f'after:{int(start_time_utc.timestamp())} before:{int(end_time_utc.timestamp())}'    

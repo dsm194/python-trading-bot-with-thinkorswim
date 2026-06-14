@@ -146,7 +146,8 @@ class TDAmeritrade:
             return False
 
         # Update token expiration and async/stream clients
-        tokenSeconds = self.async_client.token_metadata.token.get("expires_in", 3600)
+        # tokenSeconds = self.async_client.token_metadata.token.get("expires_in", 3600)
+        tokenSeconds = int(self.async_client.token_metadata.token.get("expires_in") or 3600)
         self.token_expiration = datetime.now() + timedelta(seconds=tokenSeconds)
 
         if not self.stream_client:

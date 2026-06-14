@@ -346,7 +346,8 @@ class ApiTrader(OrderBuilderWrapper):
                 obj.update({
                     "Qty": position["Qty"],
                     "Entry_Price": position["Entry_Price"],
-                    "Entry_Date": position["Entry_Date"]
+                    "Entry_Date": position["Entry_Date"],
+                    "Strategy_Version": "v1_timefilter_2025-09-04",
                 })
 
                 collection_insert = self.async_mongo.closed_positions.insert_one

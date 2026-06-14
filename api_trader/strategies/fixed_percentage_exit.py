@@ -12,7 +12,15 @@ class FixedPercentageExitStrategy(ExitStrategy):
         self.order_builder_cls = order_builder_cls
 
     def should_exit(self, additional_params):
-        
+        """
+        Determines if the exit condition is met for fixed percentage profit/loss.
+        Calls the base class method to check for option expiration before applying its own logic.
+        """
+        # Check for expiration first
+        exit_result = super().should_exit(additional_params)
+        if exit_result["exit"]:
+            return exit_result  # Exit due to expiration
+    
         last_price = additional_params.get('last_price')
         if last_price is None:
             return {"exit": False, "reason": "last_price is None", "additional_params": additional_params}

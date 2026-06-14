@@ -196,6 +196,7 @@ class OrderBuilderWrapper:
 
         # Default price to 0 (in case of missing symbols)
         price = 0
+        quote_data = {}
 
         # Determine which symbol key to use
         quote_symbol = symbol if asset_type == AssetType.EQUITY else trade_data["Pre_Symbol"]

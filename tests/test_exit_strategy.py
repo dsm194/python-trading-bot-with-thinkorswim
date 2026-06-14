@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import unittest
 from unittest.mock import MagicMock, patch
 from api_trader.order_builder import AssetType
@@ -7,10 +8,10 @@ from api_trader.strategies.strategy_settings import StrategySettings
 # A concrete subclass of ExitStrategy for testing purposes
 class MockExitStrategy(ExitStrategy):
     def should_exit(self, additional_params):
-        return {"exit": False}  # Default mock behavior
+        return super().should_exit(additional_params)  # Use base class logic
 
     def create_exit_order(self, exit_result):
-        return "MockExitOrder"  # Default mock order
+        return exit_result  # Return the result directly for verification
 
 class TestExitStrategy(unittest.TestCase):
 
@@ -48,7 +49,8 @@ class TestExitStrategy(unittest.TestCase):
             "symbol": "AAPL",
             "pre_symbol": None,
             "side": "BUY",
-            "assetType": "EQUITY"
+            "assetType": "EQUITY",
+            "expiration_date": None
         })
 
         # Check that create_exit_order was called and result is returned
@@ -130,6 +132,49 @@ class TestExitStrategy(unittest.TestCase):
         self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "BUY_TO_CLOSE"), mock_OptionInstruction.SELL_TO_OPEN)
         self.assertEqual(self.exit_strategy.get_instruction_for_side(AssetType.OPTION, "SELL_TO_CLOSE"), mock_OptionInstruction.BUY_TO_OPEN)
 
+    # ✅ 1️⃣ Test exit when expiration is near
+    def test_apply_exit_strategy_near_expiration(self):
+        trade_data = {
+            "Last_Price": 150.0,
+            "Entry_Price": 145.0,
+            "Qty": 10,
+            "Symbol": "AAPL",
+            "Side": "BUY",
+            "Asset_Type": "OPTION",
+            "Exp_Date": datetime.today().date() + timedelta(days=3),  # Near expiration (threshold = 7 days)
+        }
+
+        result = self.exit_strategy.apply_exit_strategy(trade_data)
+
+        self.assertIsNotNone(result)  # Should create an exit order
+        self.assertTrue(result["exit"])  # Should exit
+        self.assertEqual(result["reason"], "Expiration approaching")
+        self.assertEqual(result["take_profit_price"], trade_data["Last_Price"])
+
+    # ✅ 2️⃣ Test exit with 0 price when option is expired
+    def test_should_exit_expired_option(self):
+        additional_parameters = {
+            "last_price": 150.0,
+            "assetType": "OPTION",
+            "expiration_date": datetime.today().date() - timedelta(days=1),  # Already expired
+        }
+
+        result = self.exit_strategy.should_exit(additional_parameters)
+        self.assertTrue(result["exit"])  # Should exit
+        self.assertEqual(result["reason"], "Expiration approaching")
+        self.assertEqual(result["take_profit_price"], 0)  # Exit at $0
+        self.assertEqual(result["stop_loss_price"], 0)  # Exit at $0
+
+    # ✅ 3️⃣ Test no exit when expiration is far away
+    def test_should_not_exit_if_not_near_expiration(self):
+        trade_data = {
+            "last_price": 150.0,
+            "assetType": "OPTION",
+            "expiration_date": datetime.today().date() + timedelta(days=10),  # Not near expiration
+        }
+
+        result = self.exit_strategy.should_exit(trade_data)
+        self.assertFalse(result["exit"])  # Should NOT exit
 
 if __name__ == '__main__':
     unittest.main()
