@@ -221,6 +221,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.tdameritrade.placeTDAOrderAsync = mock_place_order
         api_trader.standardOrder = mock_standard_order
         api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_ORDER_SUBMISSION_ENABLED = True
         api_trader.LIVE_OPENING_ORDERS_ENABLED = True
         api_trader.MAX_LIVE_SESSION_OPEN_NOTIONAL = 1000
         api_trader.live_session_open_notional = 0
@@ -261,6 +262,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     async def test_send_order_blocks_disarmed_live_open(self):
         api_trader = ApiTrader.__new__(ApiTrader)
         api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_ORDER_SUBMISSION_ENABLED = True
         api_trader.LIVE_OPENING_ORDERS_ENABLED = False
         api_trader.logger = MagicMock()
         api_trader.standardOrder = AsyncMock()
@@ -277,6 +279,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
     async def test_send_order_blocks_live_open_above_session_limit(self):
         api_trader = ApiTrader.__new__(ApiTrader)
         api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_ORDER_SUBMISSION_ENABLED = True
         api_trader.LIVE_OPENING_ORDERS_ENABLED = True
         api_trader.MAX_LIVE_SESSION_OPEN_NOTIONAL = 500
         api_trader.live_session_open_notional = 0
@@ -303,6 +306,23 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         )
 
         api_trader.tdameritrade.placeTDAOrderAsync.assert_not_called()
+        api_trader.logger.critical.assert_called_once()
+
+    async def test_send_order_blocks_all_live_submissions(self):
+        api_trader = ApiTrader.__new__(ApiTrader)
+        api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_ORDER_SUBMISSION_ENABLED = False
+        api_trader.LIVE_OPENING_ORDERS_ENABLED = True
+        api_trader.logger = MagicMock()
+        api_trader.standardOrder = AsyncMock()
+
+        await api_trader.sendOrder(
+            {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "SELL"},
+            {"Order_Type": "STANDARD"},
+            "CLOSE POSITION",
+        )
+
+        api_trader.standardOrder.assert_not_called()
         api_trader.logger.critical.assert_called_once()
 
     @patch('api_trader.ApiTrader.queueOrder')
@@ -385,6 +405,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             quote_manager_pool=quote_manager_pool
         )
         api_trader.RUN_LIVE_TRADER = True
+        api_trader.LIVE_ORDER_SUBMISSION_ENABLED = True
         api_trader.tdameritrade.placeTDAOrderAsync = AsyncMock(return_value={"Order_ID": account_id})
 
         # Mock OCOorder response

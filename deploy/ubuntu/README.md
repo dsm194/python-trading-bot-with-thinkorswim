@@ -136,14 +136,18 @@ handoff or manually by an operator.
 Production deploys with live opening orders disabled:
 
 ```dotenv
+LIVE_ORDER_SUBMISSION_ENABLED=False
 LIVE_OPENING_ORDERS_ENABLED=False
 MAX_LIVE_SESSION_OPEN_NOTIONAL=1000
 ```
 
 Mongo's `Account_Position=Live` is not sufficient to open a new live position.
-The environment switch must also be exactly `True`, and cumulative opening
-notional during that bot process must remain within the configured ceiling.
-Live closing orders remain permitted while opening orders are disarmed.
+With `LIVE_ORDER_SUBMISSION_ENABLED=False`, no live opening or closing order is
+sent to Schwab. After that master switch is enabled,
+`LIVE_OPENING_ORDERS_ENABLED` must also be exactly `True` for new positions,
+and cumulative opening notional during that bot process must remain within the
+configured ceiling. This permits a later exits-only mode by enabling the master
+switch while leaving opening orders disarmed.
 
 For an initial observation session, leave the switch disabled and inspect the
 logs for blocked opening orders. Arm it only by editing

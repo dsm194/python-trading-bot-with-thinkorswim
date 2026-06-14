@@ -29,6 +29,9 @@ class ApiTrader(OrderBuilderWrapper):
 
             self.RUN_TASKS = os.getenv('RUN_TASKS') == "True"
             self.RUN_LIVE_TRADER = user["Accounts"].get(str(account_id), {}).get("Account_Position") == "Live"
+            self.LIVE_ORDER_SUBMISSION_ENABLED = (
+                os.getenv("LIVE_ORDER_SUBMISSION_ENABLED", "False") == "True"
+            )
             self.LIVE_OPENING_ORDERS_ENABLED = (
                 os.getenv("LIVE_OPENING_ORDERS_ENABLED", "False") == "True"
             )
@@ -77,6 +80,11 @@ class ApiTrader(OrderBuilderWrapper):
                     "LIVE account %s is running with opening orders DISARMED.",
                     modifiedAccountID(self.account_id),
                 )
+            if self.RUN_LIVE_TRADER and not self.LIVE_ORDER_SUBMISSION_ENABLED:
+                self.logger.critical(
+                    "LIVE account %s is running with all broker submissions DISABLED.",
+                    modifiedAccountID(self.account_id),
+                )
 
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
@@ -100,6 +108,15 @@ class ApiTrader(OrderBuilderWrapper):
         strategy = trade_data["Strategy"]
         side = trade_data["Side"]
         order_type = strategy_object["Order_Type"]
+
+        if self.RUN_LIVE_TRADER and not self.LIVE_ORDER_SUBMISSION_ENABLED:
+            self.logger.critical(
+                "Live %s order blocked for %s: "
+                "LIVE_ORDER_SUBMISSION_ENABLED is not True.",
+                direction.lower(),
+                symbol,
+            )
+            return
 
         if (
             self.RUN_LIVE_TRADER
