@@ -1,0 +1,12 @@
+/opt/thinkorswim_bot/shared/logs/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d
+    create 0640 orfa orfa
+}

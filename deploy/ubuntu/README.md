@@ -8,10 +8,11 @@
 - Non-secret production config: `/etc/thinkorswim_bot/thinkorswim_bot.env`
 - Production secrets: `/etc/thinkorswim_bot/thinkorswim_bot.secrets.env`
 - Shared Schwab token: `/opt/orfa_bot/shared/secrets/schwab_token.json`
+- Shared logs: `/opt/thinkorswim_bot/shared/logs`
 
 The deployer archives committed `HEAD`, refuses dirty deployments by default,
 installs dependencies into a shared virtualenv, updates the `current` symlink,
-and installs the systemd units.
+and installs the systemd units and logrotate policy.
 
 ## One-Time Setup
 
@@ -129,6 +130,24 @@ crontab -e
 
 Do not enable `thinkorswim-bot.service` at boot. It is started by the ORFA
 handoff or manually by an operator.
+
+## Logs
+
+The application writes severity-specific logs under:
+
+```text
+/opt/thinkorswim_bot/shared/logs/
+```
+
+The deploy installs `/etc/logrotate.d/thinkorswim-bot`. Logs rotate daily,
+retain 30 rotations, compress older files, and use `copytruncate` so the
+running bot can continue writing without reopening file handles.
+
+Validate the policy without rotating:
+
+```bash
+sudo logrotate -d /etc/logrotate.d/thinkorswim-bot
+```
 
 ## Updating Holidays
 

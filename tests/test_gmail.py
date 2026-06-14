@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
-from datetime import datetime
+from datetime import datetime, timezone
 from gmail import Gmail  # Assuming your class is in a file named gmail.py
 
 class TestGmail(unittest.TestCase):
@@ -196,6 +196,24 @@ class TestGmail(unittest.TestCase):
 
         # Assert the result is what extractSymbolsFromEmails returned (empty in this case)
         self.assertEqual(result, mock_extract.return_value)
+
+    def test_getEmails_filters_from_bot_start_time(self):
+        asyncio.run(self.async_test_getEmails_filters_from_bot_start_time())
+
+    @patch("gmail.Gmail.extractSymbolsFromEmails")
+    async def async_test_getEmails_filters_from_bot_start_time(self, mock_extract):
+        cutoff = datetime(2026, 6, 15, 14, 5, 30, tzinfo=timezone.utc)
+        self.gmail.email_cutoff = cutoff
+        self.mock_service.users().messages().list().execute.return_value = {
+            "resultSizeEstimate": 0
+        }
+
+        await self.gmail.getEmails()
+
+        self.mock_service.users().messages().list.assert_called_with(
+            userId="me",
+            q=f"after:{int(cutoff.timestamp())}",
+        )
 
 
     def test_getEmails_with_emails(self):

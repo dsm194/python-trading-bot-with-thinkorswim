@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime, timezone
 
 import config_loader  # noqa: F401
 
@@ -22,6 +23,7 @@ from assets.multifilehandler import MultiFileHandler
 class Main:
 
     def __init__(self):
+        self.started_at_utc = datetime.now(timezone.utc)
         self.running = True
         self.stop_event = asyncio.Event()  # NEW: Added asyncio.Event for graceful stop signaling
        # Set the stop_signal_file path to the directory of the current script
@@ -78,7 +80,7 @@ class Main:
         mongo_connected = await self.async_mongo.connect()
 
         # CONNECT TO GMAIL API
-        self.gmail = Gmail(self.logger)
+        self.gmail = Gmail(self.logger, email_cutoff=self.started_at_utc)
 
         gmail_connected = self.gmail.connect()
 

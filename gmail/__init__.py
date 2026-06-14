@@ -4,7 +4,6 @@
 
 # imports
 import asyncio
-from zoneinfo import ZoneInfo
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -12,7 +11,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 import os.path
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 import config_loader  # noqa: F401
@@ -22,9 +21,12 @@ THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 class Gmail:
 
-    def __init__(self, logger):
+    def __init__(self, logger, email_cutoff=None):
 
         self.logger = logger
+        self.email_cutoff = email_cutoff or datetime.now(timezone.utc)
+        if self.email_cutoff.tzinfo is None:
+            self.email_cutoff = self.email_cutoff.replace(tzinfo=timezone.utc)
 
         self.SCOPES = ["https://mail.google.com/"]
 
@@ -252,32 +254,14 @@ class Gmail:
 
     async def getEmails(self):
         """
-        Retrieves emails from the inbox within a specific time range, processes their content, and moves them to the trash.
+        Retrieves emails received after this bot process started, processes
+        their content, and moves them to the trash.
         
         Returns:
             list: Extracted symbols from email subjects.
         """
         payloads = []
-
-        def convert_to_utc_with_timezone(local_hour, local_minute, timezone_str):
-            """Convert local time to UTC based on a given timezone."""
-            local_tz = ZoneInfo(timezone_str)
-            # Create a local datetime object
-            local_dt = datetime.now(local_tz).replace(
-                hour=local_hour, minute=local_minute, second=0, microsecond=0
-            )
-            # Convert to UTC
-            utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
-            return utc_dt
-
-        # Convert the local time range to UTC
-        # start_time_utc = convert_to_utc_with_timezone(6, 31, "PST8PDT")
-        # end_time_utc = convert_to_utc_with_timezone(12, 59, "PST8PDT")
-        start_time_utc = convert_to_utc_with_timezone(6, 31, "US/Pacific")
-        end_time_utc = convert_to_utc_with_timezone(12, 59, "US/Pacific")
-
-        # Gmail API requires RFC3339 format
-        query = f'after:{int(start_time_utc.timestamp())} before:{int(end_time_utc.timestamp())}'    
+        query = f"after:{int(self.email_cutoff.timestamp())}"
 
         try:
             # Get the list of all emails within the time range
@@ -293,7 +277,7 @@ class Gmail:
                     # Move the email to the trash
                     await self._move_to_trash(message["id"])
             else:
-                self.logger.info("No emails found in the specified time range.")
+                self.logger.info("No emails found after the bot start time.")
         except Exception as e:
             self.logger.error(f"Error in getEmails: {e}")
         finally:

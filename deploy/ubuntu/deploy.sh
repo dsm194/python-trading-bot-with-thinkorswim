@@ -60,6 +60,7 @@ ssh "$deploy_host" \
    sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-after-orfa.service' /etc/systemd/system/ && \
    sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-stop.service' /etc/systemd/system/ && \
    sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-stop.timer' /etc/systemd/system/ && \
+   sudo cp '$deploy_root/current/deploy/ubuntu/logrotate.thinkorswim-bot' /etc/logrotate.d/thinkorswim-bot && \
    sudo cp '$deploy_root/current/deploy/ubuntu/orfa-bot-live-paper.service.d/thinkorswim-handoff.conf' /etc/systemd/system/orfa-bot-live-paper.service.d/"
 
 scp "$profile_path" "$deploy_host:/tmp/thinkorswim_bot.env"
