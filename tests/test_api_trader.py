@@ -1489,16 +1489,28 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             f"CANCELED ORDER for SYM2 - TRADER: {api_trader.user['Name']} - ACCOUNT ID: {modifiedAccountID(api_trader.account_id)}"
         )
 
-        # Verify that MongoDB updates were correctly prepared
-        api_trader.async_mongo.open_positions.bulk_write.assert_called_once_with([
-            UpdateOne(
-                {"Trader": api_trader.user["Name"], "Account_ID": api_trader.account_id, "Symbol": "SYM4", "Strategy": "STRATEGY_D"},
-                {'$set': {'childOrderStrategies.$[orderElem].Order_Status': 'WORKING'}},
-                False, None,
-                [{'orderElem.Order_ID': 24680}],  # The array filter for orderElem.Order_ID
-                None
-            )
-        ])
+        # Terminal and working statuses are persisted into the full nested OCO
+        # structure so the same status is not reprocessed on the next poll.
+        bulk_updates = api_trader.async_mongo.open_positions.bulk_write.call_args.args[0]
+        self.assertEqual(len(bulk_updates), 3)
+        self.assertEqual(
+            mock_open_positions[1]["childOrderStrategies"][0][
+                "childOrderStrategies"
+            ][0]["Order_Status"],
+            "CANCELED",
+        )
+        self.assertEqual(
+            mock_open_positions[2]["childOrderStrategies"][0][
+                "childOrderStrategies"
+            ][0]["Order_Status"],
+            "REJECTED",
+        )
+        self.assertEqual(
+            mock_open_positions[3]["childOrderStrategies"][0][
+                "childOrderStrategies"
+            ][0]["Order_Status"],
+            "WORKING",
+        )
 
         # Check that the appropriate insertions were made for CANCELED orders
         self.assertEqual(api_trader.async_mongo.canceled.insert_many.call_count, 1)
@@ -1529,6 +1541,34 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
                 'Account_ID': api_trader.account_id
             }
         ])
+
+        # Polling the same terminal statuses again should not log or archive
+        # duplicate cancellation/rejection events.
+        api_trader.logger.info.reset_mock()
+        api_trader.async_mongo.canceled.insert_many.reset_mock()
+        api_trader.async_mongo.rejected.insert_many.reset_mock()
+        api_trader.async_mongo.open_positions.bulk_write.reset_mock()
+        api_trader.async_mongo.open_positions.find.return_value.to_list = AsyncMock(
+            side_effect=[mock_open_positions[1:3], []]
+        )
+        api_trader.tdameritrade.getSpecificOrderAsync = AsyncMock(
+            side_effect=[
+                {"status": "CANCELED", "Order_ID": 67890},
+                {"status": "REJECTED", "Order_ID": 13579},
+            ]
+        )
+
+        await api_trader.tasks.checkOCOtriggers()
+
+        api_trader.async_mongo.canceled.insert_many.assert_not_called()
+        api_trader.async_mongo.rejected.insert_many.assert_not_called()
+        api_trader.async_mongo.open_positions.bulk_write.assert_not_called()
+        terminal_logs = [
+            call.args[0]
+            for call in api_trader.logger.info.call_args_list
+            if "CANCELED ORDER" in call.args[0] or "REJECTED ORDER" in call.args[0]
+        ]
+        self.assertEqual(terminal_logs, [])
 
     async def test_apply_bulk_updates_mongo_failures(self):
         """Test that _apply_bulk_updates handles MongoDB failures gracefully."""

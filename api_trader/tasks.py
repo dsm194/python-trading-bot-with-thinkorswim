@@ -366,15 +366,55 @@ class Tasks:
             if isinstance(child_orders, dict):  # Ensure list format
                 child_orders = [child_orders]
 
+            status_changed = False
+            processed_order_ids = set()
+
             for child_order in child_orders:
                 try:
                     if "childOrderStrategies" in child_order:  # Handle nested OCO orders
                         for nested_order in child_order["childOrderStrategies"]:
-                            await self._process_child_order(nested_order, position)
+                            order_id = nested_order.get("Order_ID")
+                            if order_id in processed_order_ids:
+                                continue
+                            processed_order_ids.add(order_id)
+                            status_changed |= await self._process_child_order(
+                                nested_order, position
+                            )
                     else:
-                        await self._process_child_order(child_order, position)
+                        order_id = child_order.get("Order_ID")
+                        if order_id in processed_order_ids:
+                            continue
+                        processed_order_ids.add(order_id)
+                        status_changed |= await self._process_child_order(
+                            child_order, position
+                        )
                 except Exception as e:
                     self.logger.error(f"Error processing child order: {child_order} - {e}")
+
+            if status_changed:
+                filter_query = (
+                    {"_id": position["_id"]}
+                    if position.get("_id") is not None
+                    else {
+                        "Trader": self.user["Name"],
+                        "Account_ID": self.account_id,
+                        "Symbol": position["Symbol"],
+                        "Strategy": position["Strategy"],
+                    }
+                )
+                await self.bulk_updates_queue.put(
+                    UpdateOne(
+                        filter_query,
+                        {
+                            "$set": {
+                                "childOrderStrategies": position[
+                                    "childOrderStrategies"
+                                ]
+                            }
+                        },
+                        upsert=False,
+                    )
+                )
         except Exception as e:
             self.logger.error(f"Error processing position: {position} - {e}")
 
@@ -399,7 +439,15 @@ class Tasks:
         if not new_status:
             if order_id > 0:
                 self.logger.warning(f"No status found for order_id: {order_id}")
-            return
+            return False
+
+        current_status = child_order.get("Order_Status")
+        if new_status == current_status:
+            self.logger.debug(
+                f"Skipping update for Order_ID {order_id} "
+                f"(Status unchanged: {new_status})"
+            )
+            return False
 
         # Handle FILLED status
         if new_status == "FILLED":
@@ -408,10 +456,11 @@ class Tasks:
 
             await self.api_trader.pushOrder(position, spec_order)
             self.logger.info(f"Order {order_id} for {position['Symbol']} filled")
-            return
+            return False
 
         # Handle REJECTED or CANCELED status
         elif new_status in ["CANCELED", "REJECTED"]:
+            child_order["Order_Status"] = new_status
             other = {
                 "Symbol": position["Symbol"],
                 "Order_Type": position["Order_Type"],
@@ -431,42 +480,11 @@ class Tasks:
                 f"{new_status.upper()} ORDER for {position['Symbol']} - "
                 f"TRADER: {self.user['Name']} - ACCOUNT ID: {modifiedAccountID(self.account_id)}"
             )
+            return True
         else:
-            # Get the existing status from the child order
-            current_status = child_order.get("Order_Status")
-
-            # Only update if the status has changed
-            if new_status == current_status:
-                self.logger.debug(f"Skipping update for Order_ID {order_id} (Status unchanged: {new_status})")
-                return
-
             self.logger.debug(f"Updating Order_ID {order_id} from {current_status} to {new_status}")
-
-            # Use array filters to update the specific child order's status based on Order_ID
-            filter_query = {
-                "Trader": self.user["Name"],
-                "Account_ID": self.account_id,
-                "Symbol": position["Symbol"],
-                "Strategy": position["Strategy"]
-            }
-
-            update_query = {
-                "$set": {
-                    "childOrderStrategies.$[orderElem].Order_Status": new_status
-                }
-            }
-
-            array_filters = [{"orderElem.Order_ID": order_id}]
-
-            # Append to bulk_updates for later execution via bulk_write
-            await self.bulk_updates_queue.put(
-                UpdateOne(
-                    filter_query,
-                    update_query,
-                    upsert=False,
-                    array_filters=array_filters
-                )
-            )
+            child_order["Order_Status"] = new_status
+            return True
 
     async def _apply_bulk_updates(self):
         """Processes bulk updates, rejected orders, and canceled orders from queues with error handling."""
