@@ -177,6 +177,16 @@ less +F \
   /opt/thinkorswim_bot/shared/logs/error.log
 ```
 
+The deploy also installs an operator tmux helper:
+
+```bash
+thinkorswim-tmux
+```
+
+It attaches to an existing `thinkorswim` tmux session or creates one with two
+vertical panes: `journalctl -u thinkorswim-bot.service -f` on top and the
+`less +F` shared-log view on the bottom.
+
 Validate the policy without rotating:
 
 ```bash

@@ -47,6 +47,8 @@ ssh "$deploy_host" \
 
 ssh "$deploy_host" \
   "sudo chown -R orfa:orfa '$deploy_root/releases/$release_name' '$deploy_root/shared' /opt/orfa_bot/shared/secrets"
+ssh "$deploy_host" \
+  "sudo install -m 0755 -o root -g root '$deploy_root/releases/$release_name/deploy/ubuntu/thinkorswim-tmux.sh' /usr/local/bin/thinkorswim-tmux"
 ssh "$deploy_host" "sudo -u orfa python3 -m venv '$deploy_root/shared/.venv'"
 ssh "$deploy_host" \
   "sudo -u orfa '$deploy_root/shared/.venv/bin/python' -m pip install --upgrade pip"

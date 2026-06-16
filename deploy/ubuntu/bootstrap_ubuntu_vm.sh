@@ -5,7 +5,7 @@ app_user="${BOT_SERVICE_USER:-orfa}"
 app_root="${BOT_DEPLOY_ROOT:-/opt/thinkorswim_bot}"
 
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip logrotate
+sudo apt-get install -y python3 python3-venv python3-pip logrotate tmux
 
 if ! id "$app_user" >/dev/null 2>&1; then
   sudo useradd --system --create-home --shell /usr/sbin/nologin "$app_user"
