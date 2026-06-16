@@ -60,19 +60,20 @@ class Main:
 
         file_handler.setFormatter(formatter)
 
-        ch = logging.StreamHandler()
-
-        ch.setLevel(level="INFO")
-
-        ch.setFormatter(formatter)
-
         self.logger = logging.getLogger(__name__)
 
         self.logger.setLevel(level="INFO")
 
         self.logger.addHandler(file_handler)
 
-        self.logger.addHandler(ch)
+        if os.getenv("LOG_TO_CONSOLE", "True") == "True":
+            ch = logging.StreamHandler()
+
+            ch.setLevel(level="INFO")
+
+            ch.setFormatter(formatter)
+
+            self.logger.addHandler(ch)
 
         # CONNECT TO MONGO
         self.async_mongo = AsyncMongoDB(self.logger)

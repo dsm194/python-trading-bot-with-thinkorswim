@@ -166,6 +166,17 @@ The deploy installs `/etc/logrotate.d/thinkorswim-bot`. Logs rotate daily,
 retain 30 rotations, compress older files, and use `copytruncate` so the
 running bot can continue writing without reopening file handles.
 
+Production disables duplicate console logging with `LOG_TO_CONSOLE=False`, so
+`journalctl -u thinkorswim-bot.service` should mainly show systemd lifecycle
+messages. Tail the shared log files for application behavior:
+
+```bash
+less +F \
+  /opt/thinkorswim_bot/shared/logs/info.log \
+  /opt/thinkorswim_bot/shared/logs/warning.log \
+  /opt/thinkorswim_bot/shared/logs/error.log
+```
+
 Validate the policy without rotating:
 
 ```bash
