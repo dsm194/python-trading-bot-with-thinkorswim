@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     from api_trader import ApiTrader  # Forward declaration to avoid circular import
 
 
+_EXPIRED_PAPER_OPTION_DRY_RUN_LOGGED_IDS = set()
+
+
 class Tasks:
     """
     The Tasks class is used for handling additional tasks outside of the live trader.
@@ -58,7 +61,7 @@ class Tasks:
         self.rejected_inserts_queue = asyncio.Queue()
         self.canceled_inserts_queue = asyncio.Queue()
         self.auto_close_expired_paper_options = os.getenv("AUTO_CLOSE_EXPIRED_PAPER_OPTIONS") == "True"
-        self.expired_paper_option_dry_run_logged_ids = set()
+        self.expired_paper_option_dry_run_logged_ids = _EXPIRED_PAPER_OPTION_DRY_RUN_LOGGED_IDS
 
         super().__init__()
 
@@ -284,10 +287,11 @@ class Tasks:
 
         if not self.auto_close_expired_paper_options:
             position_id = position.get("_id")
-            if position_id in self.expired_paper_option_dry_run_logged_ids:
+            dry_run_key = (str(position.get("Account_ID")), str(position_id))
+            if dry_run_key in self.expired_paper_option_dry_run_logged_ids:
                 return
 
-            self.expired_paper_option_dry_run_logged_ids.add(position_id)
+            self.expired_paper_option_dry_run_logged_ids.add(dry_run_key)
             self.logger.info(
                 f"[DRY RUN] Would close expired paper option {symbol} at 0 "
                 f"(position_id={position_id}, account_id={position.get('Account_ID')}, "

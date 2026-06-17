@@ -3,11 +3,13 @@ import datetime as dt
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from api_trader.tasks import Tasks
+from api_trader.tasks import Tasks, _EXPIRED_PAPER_OPTION_DRY_RUN_LOGGED_IDS
 
 
 class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        _EXPIRED_PAPER_OPTION_DRY_RUN_LOGGED_IDS.clear()
+
         # Mocking the quote manager and passing it to Tasks
         self.api_trader = MagicMock()
         self.tasks = Tasks(self.api_trader)
@@ -331,6 +333,60 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         )
 
         await self.tasks.checkOCOpapertriggers()
+
+        dry_run_calls = [
+            call for call in self.tasks.logger.info.call_args_list
+            if "[DRY RUN] Would close expired paper option" in call.args[0]
+        ]
+        self.assertEqual(len(dry_run_calls), 1)
+
+    async def test_checkOCOpapertriggers_dry_run_suppression_survives_tasks_recreation(self):
+        expired_position = {
+            "_id": "expired_position",
+            "Symbol": "CP",
+            "Pre_Symbol": "CP    250718C00082500",
+            "Exp_Date": "2025-07-18",
+            "Option_Type": "CALL",
+            "Strategy": "STRATEGY_1",
+            "Account_ID": "paper_account",
+            "Asset_Type": "OPTION",
+            "Order_Type": "STANDARD",
+            "Qty": 1,
+            "Entry_Price": 2.85,
+            "Entry_Date": dt.datetime(2025, 7, 1, tzinfo=dt.timezone.utc),
+            "Side": "BUY_TO_OPEN",
+            "Position_Size": 285,
+            "Position_Type": "LONG",
+            "Account_Position": "Paper",
+        }
+
+        async def run_check(tasks):
+            tasks.user = {"Name": "TestUser"}
+            tasks.account_id = "paper_account"
+            tasks.auto_close_expired_paper_options = False
+            tasks.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={"isOpen": True})
+            tasks.api_trader.quote_manager.subscribed_symbols = {}
+            tasks.api_trader.quote_manager.add_callback = AsyncMock()
+            tasks.api_trader.quote_manager.add_quotes = AsyncMock()
+
+            expired_options_cursor = MagicMock()
+            expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
+            open_positions_cursor = MagicMock()
+            open_positions_cursor.to_list = AsyncMock(return_value=[])
+            tasks.async_mongo.open_positions.find = MagicMock(
+                side_effect=[expired_options_cursor, open_positions_cursor]
+            )
+
+            strategies_cursor = MagicMock()
+            strategies_cursor.to_list = AsyncMock(return_value=[])
+            tasks.async_mongo.strategies.find.return_value = strategies_cursor
+
+            await tasks.checkOCOpapertriggers()
+
+        await run_check(self.tasks)
+
+        recreated_tasks = Tasks(self.api_trader)
+        await run_check(recreated_tasks)
 
         dry_run_calls = [
             call for call in self.tasks.logger.info.call_args_list
