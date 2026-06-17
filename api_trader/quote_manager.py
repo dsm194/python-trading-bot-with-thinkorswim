@@ -313,22 +313,24 @@ class QuoteManager:
         symbols_to_unsubscribe = []
 
         async with self.lock:
-            # First, copy the structures BEFORE removing from self.subscribed_symbols
-            symbols_to_unsubscribe = [
-                self.subscribed_symbols[symbol]
-                for symbol in symbols if symbol in self.subscribed_symbols
-            ]
+            seen = set()
+            for symbol in symbols:
+                if symbol in seen:
+                    continue
+
+                seen.add(symbol)
+                subscribed_symbol = self.subscribed_symbols.pop(symbol, None)
+                if subscribed_symbol:
+                    symbols_to_unsubscribe.append(subscribed_symbol)
 
         if symbols_to_unsubscribe:
             self.logger.info(f"[QUOTE MANAGER] Unsubscribing from {symbols_to_unsubscribe}.")
 
-            # Call API first before removing from tracking list
-            await self._unsubscribe_from_stream(symbols_to_unsubscribe)
-
-            # Only remove AFTER successful API call
-            async with self.lock:
-                for entry in symbols_to_unsubscribe:
-                    self.subscribed_symbols.pop(entry["symbol"], None)
+            unsubscribe_succeeded = await self._unsubscribe_from_stream(symbols_to_unsubscribe)
+            if not unsubscribe_succeeded:
+                async with self.lock:
+                    for entry in symbols_to_unsubscribe:
+                        self.subscribed_symbols.setdefault(entry["symbol"], entry)
 
         else:
             self.logger.warning(f"[QUOTE MANAGER] No matching symbols found in subscribed_symbols for unsubscribe.")
@@ -339,11 +341,14 @@ class QuoteManager:
             if structured_symbols:
                 await self.tdameritrade.unsubscribe_symbols(structured_symbols)  # Call API with correct format
                 self.logger.info(f"[QUOTE MANAGER] Sent batch unsubscribe request for {structured_symbols}.")
+                return True
             else:
                 self.logger.warning(f"[QUOTE MANAGER] No valid structures found for unsubscribe.")
+                return False
 
         except Exception as e:
             self.logger.error(f"[QUOTE MANAGER] Failed to unsubscribe symbols: {structured_symbols}, Error: {e}")
+            return False
 
     async def add_callback(self, callback):
         """Add a new callback."""

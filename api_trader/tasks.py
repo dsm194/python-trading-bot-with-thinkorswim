@@ -1,6 +1,7 @@
 
 # imports
 import asyncio
+import datetime as dt
 import os
 import time
 from typing import TYPE_CHECKING
@@ -37,6 +38,7 @@ class Tasks:
 
         self.tasks_running = False
         self.positions_by_symbol = {}  # Class-level positions dictionary
+        self.symbol_evaluation_locks = {}
         self.strategy_dict = {}  # Class-level strategy dictionary
         self.lock = asyncio.Lock()
         self._cached_market_hours = {}
@@ -55,6 +57,7 @@ class Tasks:
         self.bulk_updates_queue = asyncio.Queue()
         self.rejected_inserts_queue = asyncio.Queue()
         self.canceled_inserts_queue = asyncio.Queue()
+        self.auto_close_expired_paper_options = os.getenv("AUTO_CLOSE_EXPIRED_PAPER_OPTIONS") == "True"
 
         super().__init__()
 
@@ -113,28 +116,7 @@ class Tasks:
 
         await self.quote_manager.add_callback(self.evaluate_paper_triggers)
 
-        # Collect all symbols from the open positions that haven't been subscribed yet
-        # Check which symbols are already subscribed and filter them out from the query
-        subscribed_symbols = set(self.quote_manager.subscribed_symbols)
-
-        # Fetch open positions but only those that haven't been subscribed to yet
-        open_positions_cursor = self.async_mongo.open_positions.find({
-            "Trader": self.user["Name"],
-            "Account_ID": self.account_id,
-            "Account_Position": "Paper",
-            # "Strategy": {
-            #     "$in": [
-            #         "ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG",
-            #         "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG",
-            #         "ATRHIGHSMABREAKOUTSFILTER_DEBUG",
-            #         "MACD_XVER_8_17_9_EXP_DEBUG",
-            #     ]
-            # },
-            "$and": [
-                {"Symbol": {"$nin": list(subscribed_symbols)}},  # Symbol is NOT in subscribed symbols
-                {"Pre_Symbol": {"$nin": list(subscribed_symbols)}}  # Pre_Symbol is NOT in subscribed symbols
-            ]
-        }, {
+        position_projection = {
             "_id": 1,
             "Order_ID": 1,
             "Symbol": 1,
@@ -156,12 +138,64 @@ class Tasks:
             "Pre_Symbol": 1,
             "Exp_Date": 1,
             "Option_Type": 1
-        })
+        }
+
+        today = dtNow.date()
+        today_iso = today.isoformat()
+        today_start = dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc)
+
+        # Keep this cleanup targeted so the frequent task loop does not scan every
+        # fake paper position just to find a few expired option contracts.
+        expired_options_cursor = self.async_mongo.open_positions.find({
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Account_Position": "Paper",
+            "Asset_Type": "OPTION",
+            "$or": [
+                {"Exp_Date": {"$lt": today_iso}},
+                {"Exp_Date": {"$lt": today_start}},
+            ]
+        }, position_projection)
+
+        expired_options = await expired_options_cursor.to_list(None)
+        for position in expired_options:
+            if self._is_expired_paper_option(position, today):
+                await self._close_expired_paper_option(position, dtNow)
+
+        # Collect all symbols from the open positions that haven't been subscribed yet
+        # Check which symbols are already subscribed and filter them out from the query
+        subscribed_symbols = set(self.quote_manager.subscribed_symbols)
+
+        # Fetch open positions but only those that haven't been subscribed to yet
+        open_positions_cursor = self.async_mongo.open_positions.find({
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Account_Position": "Paper",
+            # "Strategy": {
+            #     "$in": [
+            #         "ATRTRAILINGSTOP_ATRFACTOR1_75_OPTIONS_DEBUG",
+            #         "ATRHIGHSMABREAKOUTSFILTER_OPTIONS_DEBUG",
+            #         "ATRHIGHSMABREAKOUTSFILTER_DEBUG",
+            #         "MACD_XVER_8_17_9_EXP_DEBUG",
+            #     ]
+            # },
+            "$and": [
+                {"Symbol": {"$nin": list(subscribed_symbols)}},  # Symbol is NOT in subscribed symbols
+                {"Pre_Symbol": {"$nin": list(subscribed_symbols)}}  # Pre_Symbol is NOT in subscribed symbols
+            ]
+        }, position_projection)
 
         open_positions = await open_positions_cursor.to_list(None)
+        active_open_positions = []
+
+        for position in open_positions:
+            if self._is_expired_paper_option(position, today):
+                await self._close_expired_paper_option(position, dtNow)
+            else:
+                active_open_positions.append(position)
 
         # Fetch strategies from MongoDB (only load the strategies needed based on open positions)
-        strategy_names = {position["Strategy"] for position in open_positions}
+        strategy_names = {position["Strategy"] for position in active_open_positions}
         # Only query if there are new strategies to load
         if strategy_names:
             strategies = await self.async_mongo.strategies.find({
@@ -174,7 +208,7 @@ class Tasks:
         # Group positions by symbol and minimize API calls
         async with self.lock:
             new_symbols = []
-            for position in open_positions:
+            for position in active_open_positions:
                 # Determine the appropriate symbol key (Equity or Pre_Symbol)
                 symbol = position["Symbol"] if position["Asset_Type"] == "EQUITY" else position["Pre_Symbol"]
 
@@ -213,12 +247,101 @@ class Tasks:
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred in add_quotes: {e}")
 
+    @staticmethod
+    def _parse_expiration_date(expiration_date):
+        if not expiration_date:
+            return None
+
+        if isinstance(expiration_date, dt.datetime):
+            return expiration_date.date()
+
+        if isinstance(expiration_date, dt.date):
+            return expiration_date
+
+        if isinstance(expiration_date, str):
+            for date_format in ("%Y-%m-%d", "%Y%m%d", "%y%m%d"):
+                try:
+                    return dt.datetime.strptime(expiration_date[:10], date_format).date()
+                except ValueError:
+                    continue
+
+        return None
+
+    def _is_expired_paper_option(self, position, today):
+        if position.get("Asset_Type") != "OPTION":
+            return False
+
+        expiration_date = self._parse_expiration_date(position.get("Exp_Date"))
+        if expiration_date is None:
+            self.logger.warning(f"Paper option {position.get('Pre_Symbol')} has no valid Exp_Date; leaving open.")
+            return False
+
+        return expiration_date < today
+
+    async def _close_expired_paper_option(self, position, close_datetime):
+        symbol = position.get("Pre_Symbol")
+
+        if not self.auto_close_expired_paper_options:
+            self.logger.info(
+                f"[DRY RUN] Would close expired paper option {symbol} at 0. "
+                "Set AUTO_CLOSE_EXPIRED_PAPER_OPTIONS=True to enable."
+            )
+            return
+
+        closed_position = {
+            "Symbol": position["Symbol"],
+            "Strategy": position["Strategy"],
+            "Position_Size": position.get("Position_Size"),
+            "Position_Type": position.get("Position_Type"),
+            "Data_Integrity": "Expired Paper Option",
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Asset_Type": "OPTION",
+            "Account_Position": "Paper",
+            "Order_Type": position.get("Order_Type"),
+            "Pre_Symbol": position.get("Pre_Symbol"),
+            "Exp_Date": position.get("Exp_Date"),
+            "Option_Type": position.get("Option_Type"),
+            "Qty": position.get("Qty"),
+            "Entry_Price": position.get("Entry_Price"),
+            "Entry_Date": position.get("Entry_Date"),
+            "Exit_Price": 0,
+            "Exit_Date": close_datetime,
+        }
+
+        await self.async_mongo.closed_positions.insert_one(closed_position)
+        delete_result = await self.async_mongo.open_positions.delete_one({"_id": position["_id"]})
+
+        if delete_result.deleted_count == 0:
+            self.logger.error(f"Failed to delete expired paper option {position.get('Pre_Symbol')} from open positions.")
+            return
+
+        async with self.lock:
+            if symbol in self.positions_by_symbol:
+                self.positions_by_symbol[symbol] = [
+                    pos for pos in self.positions_by_symbol[symbol] if pos.get("_id") != position["_id"]
+                ]
+                if not self.positions_by_symbol[symbol]:
+                    del self.positions_by_symbol[symbol]
+
+        if symbol in self.quote_manager.subscribed_symbols:
+            await self.quote_manager.unsubscribe([symbol])
+
+        self.logger.info(f"Closed expired paper option {symbol} at 0.")
+
     @exception_handler
     async def evaluate_paper_triggers(self, symbol, quote_data):
         """ Evaluates whether a position should be exited based on updated quote data. """
 
+        async with self.lock:
+            symbol_lock = self.symbol_evaluation_locks.setdefault(symbol, asyncio.Lock())
+
+        async with symbol_lock:
+            await self._evaluate_paper_triggers_for_symbol(symbol, quote_data)
+
+    async def _evaluate_paper_triggers_for_symbol(self, symbol, quote_data):
         async with self.lock:  # Lock during modification
-            local_positions_by_symbol = self.positions_by_symbol.get(symbol, [])
+            local_positions_by_symbol = list(self.positions_by_symbol.get(symbol, []))
 
         # List to track positions that should be removed
         positions_to_remove = []
@@ -264,18 +387,22 @@ class Tasks:
                 # The exit conditions are met, so we need to close the position
                 position["Side"] = "SELL" if position["Position_Type"] == "LONG" and position["Qty"] > 0 else "BUY"
                 strategy_data["Order_Type"] = "STANDARD"
-                await self.api_trader.sendOrder(position, strategy_data, "CLOSE POSITION")
+                close_order_queued = await self.api_trader.sendOrder(position, strategy_data, "CLOSE POSITION")
 
                 # Mark this position for removal
-                positions_to_remove.append(position)
+                if close_order_queued:
+                    positions_to_remove.append(position)
+                else:
+                    self.logger.warning(f"Close order was not queued for {symbol}; keeping position active.")
 
         # 🔍 **NEW: Remove closed positions from `self.positions_by_symbol`**
         should_unsubscribe = False
 
         async with self.lock:
             if positions_to_remove:
+                current_positions = self.positions_by_symbol.get(symbol, [])
                 self.positions_by_symbol[symbol] = [
-                    pos for pos in self.positions_by_symbol[symbol] if pos not in positions_to_remove
+                    pos for pos in current_positions if pos not in positions_to_remove
                 ]
                 # If no more positions remain, clean up and prepare to unsubscribe
                 should_unsubscribe = not self.positions_by_symbol[symbol]

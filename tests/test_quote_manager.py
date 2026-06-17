@@ -141,6 +141,34 @@ class TestQuoteManager(unittest.IsolatedAsyncioTestCase):
             await self.quote_manager._update_stream_subscription(symbols)
             mock_update_subscription.assert_called_once_with(symbols)
 
+    async def test_concurrent_unsubscribe_sends_one_request_per_symbol(self):
+        """Test concurrent unsubscribe calls for the same symbol are idempotent."""
+        symbol = {"symbol": "AAPL", "asset_type": "EQUITY"}
+        self.quote_manager.subscribed_symbols = {"AAPL": symbol}
+
+        async def slow_unsubscribe(symbols):
+            await asyncio.sleep(0.01)
+
+        self.tdameritrade_mock.unsubscribe_symbols = AsyncMock(side_effect=slow_unsubscribe)
+
+        await asyncio.gather(
+            self.quote_manager.unsubscribe(["AAPL"]),
+            self.quote_manager.unsubscribe(["AAPL"]),
+        )
+
+        self.tdameritrade_mock.unsubscribe_symbols.assert_awaited_once_with([symbol])
+        self.assertNotIn("AAPL", self.quote_manager.subscribed_symbols)
+
+    async def test_failed_unsubscribe_restores_subscription_tracking(self):
+        """Test failed unsubscribe calls do not lose the local subscription record."""
+        symbol = {"symbol": "AAPL", "asset_type": "EQUITY"}
+        self.quote_manager.subscribed_symbols = {"AAPL": symbol}
+        self.tdameritrade_mock.unsubscribe_symbols = AsyncMock(side_effect=Exception("boom"))
+
+        await self.quote_manager.unsubscribe(["AAPL"])
+
+        self.assertEqual(self.quote_manager.subscribed_symbols["AAPL"], symbol)
+
     async def test_concurrent_add_quotes(self):
         """Test that concurrent calls to add_quotes do not result in duplicate subscriptions."""
 

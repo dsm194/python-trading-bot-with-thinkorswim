@@ -227,9 +227,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.live_session_open_notional = 0
 
         # Call method: Open Position Scenario
-        await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
+        order_was_queued = await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
 
         # Assertions for successful order placement
+        self.assertTrue(order_was_queued)
         mock_standard_order.assert_called_once_with(trade_data, strategy_object, "OPEN POSITION", api_trader.user, api_trader.account_id)
         mock_place_order.assert_called_once_with(parent_order_mock)
         mock_queue_order.assert_called_once()
@@ -253,9 +254,10 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
 
         # Test placing an order with RUN_LIVE_TRADER set to False
         api_trader.RUN_LIVE_TRADER = False
-        await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
+        order_was_queued = await api_trader.sendOrder(trade_data, strategy_object, "OPEN POSITION")
 
         # Assert that placeTDAOrderAsync was not called in paper trading mode
+        self.assertTrue(order_was_queued)
         self.assertEqual(mock_place_order.call_count, 1)  # Should be called only once in live mode
         mock_queue_order.assert_called()  # Paper trading still enqueues the order
 
@@ -267,12 +269,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.logger = MagicMock()
         api_trader.standardOrder = AsyncMock()
 
-        await api_trader.sendOrder(
+        order_was_queued = await api_trader.sendOrder(
             {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY"},
             {"Order_Type": "STANDARD"},
             "OPEN POSITION",
         )
 
+        self.assertFalse(order_was_queued)
         api_trader.standardOrder.assert_not_called()
         api_trader.logger.critical.assert_called_once()
 
@@ -299,12 +302,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        await api_trader.sendOrder(
+        order_was_queued = await api_trader.sendOrder(
             {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "BUY"},
             {"Order_Type": "STANDARD"},
             "OPEN POSITION",
         )
 
+        self.assertFalse(order_was_queued)
         api_trader.tdameritrade.placeTDAOrderAsync.assert_not_called()
         api_trader.logger.critical.assert_called_once()
 
@@ -316,12 +320,13 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.logger = MagicMock()
         api_trader.standardOrder = AsyncMock()
 
-        await api_trader.sendOrder(
+        order_was_queued = await api_trader.sendOrder(
             {"Symbol": "AAPL", "Strategy": "test_strategy", "Side": "SELL"},
             {"Order_Type": "STANDARD"},
             "CLOSE POSITION",
         )
 
+        self.assertFalse(order_was_queued)
         api_trader.standardOrder.assert_not_called()
         api_trader.logger.critical.assert_called_once()
 
@@ -923,6 +928,84 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         # Verify the queue deletion
         self.api_trader.async_mongo.queue.delete_one.assert_called_once_with({'_id': '111111'})
 
+    async def test_queue_order_uses_option_contract_identity(self):
+        option_order = {
+            "_id": "111111",
+            "Symbol": "AAPL",
+            "Pre_Symbol": "AAPL  250718C00150000",
+            "Exp_Date": "2025-07-18",
+            "Option_Type": "CALL",
+            "Strategy": "TestStrategy",
+            "Direction": "OPEN POSITION",
+            "Account_ID": self.account_id,
+            "Asset_Type": "OPTION",
+            "Side": "BUY_TO_OPEN",
+            "Position_Type": "LONG",
+            "Position_Size": 10,
+            "Account_Position": "Paper",
+            "Order_Type": "LIMIT",
+            "Qty": 1,
+        }
+
+        await self.api_trader.queueOrder(option_order)
+
+        self.api_trader.async_mongo.queue.update_one.assert_awaited_once_with(
+            {
+                "Trader": "TestUser",
+                "Account_ID": "12345",
+                "Symbol": "AAPL",
+                "Strategy": "TestStrategy",
+                "Asset_Type": "OPTION",
+                "Pre_Symbol": "AAPL  250718C00150000",
+            },
+            {"$set": option_order},
+            upsert=True
+        )
+
+    async def test_pushOrder_close_option_matches_exact_contract(self):
+        self.queue_order = {
+            "_id": "111111",
+            "Symbol": "AAPL",
+            "Pre_Symbol": "AAPL  250718C00150000",
+            "Exp_Date": "2025-07-18",
+            "Option_Type": "CALL",
+            "Strategy": "TestStrategy",
+            "Direction": "CLOSE POSITION",
+            "Account_ID": self.account_id,
+            "Asset_Type": "OPTION",
+            "Side": "SELL_TO_CLOSE",
+            "Position_Type": "LONG",
+            "Position_Size": 10,
+            "Account_Position": "Paper",
+            "Order_Type": "LIMIT",
+            "Qty": 1,
+            "Entry_Date": "2024-01-01",
+            "Entry_Price": 2.5,
+            "Exit_Date": None
+        }
+        self.spec_order = {
+            "price": 0,
+            "quantity": 1
+        }
+        self.api_trader.async_mongo.open_positions.find_one.return_value = {
+            "Qty": 1,
+            "Entry_Price": 2.5,
+            "Entry_Date": "2024-01-01"
+        }
+
+        await self.api_trader.pushOrder(self.queue_order, self.spec_order)
+
+        expected_filter = {
+            "Trader": "TestUser",
+            "Account_ID": "12345",
+            "Symbol": "AAPL",
+            "Strategy": "TestStrategy",
+            "Asset_Type": "OPTION",
+            "Pre_Symbol": "AAPL  250718C00150000",
+        }
+        self.api_trader.async_mongo.open_positions.find_one.assert_awaited_once_with(expected_filter)
+        self.api_trader.async_mongo.open_positions.delete_one.assert_awaited_once_with(expected_filter)
+
     async def test_pushOrder_mongo_exception(self):
         """Test that pushOrder handles MongoDB exceptions."""
         # Setup mocks to raise exceptions
@@ -1239,6 +1322,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
         api_trader.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={"isOpen": True})
         api_trader.tdameritrade.getQuoteAsync = AsyncMock(return_value=create_mock_quotes(num_positions))
         api_trader.tdameritrade.placeTDAOrderAsync = AsyncMock(return_value={"Order_ID": 12345})
+        api_trader.sendOrder = AsyncMock(return_value=True)
 
         # Properly mock the stop_event
         mock_stop_event = MagicMock()
@@ -1279,7 +1363,7 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             await api_trader.tasks.evaluate_paper_triggers(position["Symbol"], {"last_price": 170})
 
         # Assertions
-        self.assertEqual(api_trader.async_mongo.open_positions.find.call_count, 1)
+        self.assertEqual(api_trader.async_mongo.open_positions.find.call_count, 2)
         self.assertEqual(api_trader.async_mongo.strategies.find.call_count, 1)
         api_trader.quote_manager.add_quotes.assert_called_once_with(
             [{'symbol': position['Symbol'], 'asset_type': position['Asset_Type']} for position in mock_open_positions]

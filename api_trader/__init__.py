@@ -89,6 +89,35 @@ class ApiTrader(OrderBuilderWrapper):
         except Exception as e:
             self.logger.error(f"Error initializing ApiTrader: {str(e)}")
 
+    @staticmethod
+    def _is_option_order(order):
+        return order.get("Asset_Type") == "OPTION" or bool(order.get("Pre_Symbol"))
+
+    @classmethod
+    def _order_identity_filter(cls, order):
+        identity_filter = {
+            "Trader": order["Trader"] if "Trader" in order else None,
+            "Account_ID": order["Account_ID"],
+            "Symbol": order["Symbol"],
+            "Strategy": order["Strategy"],
+        }
+
+        if identity_filter["Trader"] is None:
+            identity_filter.pop("Trader")
+
+        if cls._is_option_order(order) and order.get("Pre_Symbol"):
+            identity_filter["Asset_Type"] = "OPTION"
+            identity_filter["Pre_Symbol"] = order["Pre_Symbol"]
+
+        return identity_filter
+
+    @classmethod
+    def _order_identity_key(cls, order):
+        key_parts = [order["Symbol"], order["Strategy"]]
+        if cls._is_option_order(order) and order.get("Pre_Symbol"):
+            key_parts.append(order["Pre_Symbol"])
+        return "_".join(key_parts)
+
     async def stop_trader(self):
         await self.quote_manager.stop_streaming()
         await self.position_updater.stop()
@@ -116,7 +145,7 @@ class ApiTrader(OrderBuilderWrapper):
                 direction.lower(),
                 symbol,
             )
-            return
+            return False
 
         if (
             self.RUN_LIVE_TRADER
@@ -128,7 +157,7 @@ class ApiTrader(OrderBuilderWrapper):
                 "LIVE_OPENING_ORDERS_ENABLED is not True.",
                 symbol,
             )
-            return
+            return False
 
         # Generate the order and object based on the order type
         if order_type == "STANDARD":
@@ -141,11 +170,11 @@ class ApiTrader(OrderBuilderWrapper):
             )
         else:
             self.logger.error(f"Unsupported order type: {order_type}")
-            return
+            return False
 
         if order is None or obj is None:
             self.logger.warning(f"Order creation failed for {symbol}.")
-            return
+            return False
 
         # Place live trade orders
         if self.RUN_LIVE_TRADER:
@@ -169,7 +198,7 @@ class ApiTrader(OrderBuilderWrapper):
                         projected_notional,
                         self.MAX_LIVE_SESSION_OPEN_NOTIONAL,
                     )
-                    return
+                    return False
 
             try:
                 order_details = await self.tdameritrade.placeTDAOrderAsync(order)
@@ -191,7 +220,7 @@ class ApiTrader(OrderBuilderWrapper):
                     self.logger.error(
                         f"Order rejected for {symbol} ({modifiedAccountID(self.account_id)}) - Reason: {error_message}"
                     )
-                    return
+                    return False
 
                 # Update order object with live trade details
                 obj.update(order_details)
@@ -203,7 +232,7 @@ class ApiTrader(OrderBuilderWrapper):
                 self.logger.error(
                     f"Exception while placing live order for {symbol}: {e}"
                 )
-                return
+                return False
         else:
             # Simulate a paper trade
             assign_order_ids(obj)  # Ensure this function handles async or thread-safe behavior if needed
@@ -218,6 +247,7 @@ class ApiTrader(OrderBuilderWrapper):
         self.logger.info(
             f"{trade_type}: {side} order for symbol {symbol} ({modifiedAccountID(self.account_id)})"
         )
+        return True
 
 
     # STEP TWO
@@ -230,12 +260,7 @@ class ApiTrader(OrderBuilderWrapper):
         """
         # Asynchronously update or insert into the queue
         result = await self.async_mongo.queue.update_one(
-            {
-                "Trader": self.user["Name"],
-                "Account_ID": order["Account_ID"],
-                "Symbol": order["Symbol"],
-                "Strategy": order["Strategy"]
-            },
+            self._order_identity_filter({**order, "Trader": self.user["Name"]}),
             {"$set": order},
             upsert=True
         )
@@ -395,9 +420,10 @@ class ApiTrader(OrderBuilderWrapper):
                 "Exit_Date": getUTCDatetime() if not queue_order.get("Exit_Date") else queue_order["Exit_Date"]
             })
 
-            position = await self.async_mongo.open_positions.find_one(
-                {"Trader": self.user["Name"], "Symbol": symbol, "Strategy": strategy, "Account_ID": account_id}
+            position_filter = self._order_identity_filter(
+                {**queue_order, "Trader": self.user["Name"]}
             )
+            position = await self.async_mongo.open_positions.find_one(position_filter)
 
             if position:
                 obj.update({
@@ -409,9 +435,7 @@ class ApiTrader(OrderBuilderWrapper):
 
                 collection_insert = self.async_mongo.closed_positions.insert_one
 
-                is_removed = await self.async_mongo.open_positions.delete_one(
-                    {"Trader": self.user["Name"], "Account_ID": account_id, "Symbol": symbol, "Strategy": strategy}
-                )
+                is_removed = await self.async_mongo.open_positions.delete_one(position_filter)
 
                 if is_removed.deleted_count == 0:
                     self.logger.error(f"Failed to delete open position for {symbol}")
@@ -488,8 +512,8 @@ class ApiTrader(OrderBuilderWrapper):
             strategies = await strategies_cursor.to_list(None)
 
             # Convert lists to dictionaries for faster lookup
-            queued_orders_dict = {f"{order['Symbol']}_{order['Strategy']}": order for order in queued_orders}
-            open_positions_dict = {f"{position['Symbol']}_{position['Strategy']}": position for position in open_positions}
+            queued_orders_dict = {self._order_identity_key(order): order for order in queued_orders}
+            open_positions_dict = {self._order_identity_key(position): position for position in open_positions}
             strategies_dict = {strategy['Strategy']: strategy for strategy in strategies}
 
             # Now, iterate over each row in trade_data and process the corresponding order
@@ -498,8 +522,9 @@ class ApiTrader(OrderBuilderWrapper):
                 symbol = row["Symbol"]
 
                 # Lookup strategy, queued order, and open position directly by symbol and strategy
-                queued_order = queued_orders_dict.get(f"{symbol}_{strategy}")
-                open_position = open_positions_dict.get(f"{symbol}_{strategy}")
+                order_key = self._order_identity_key(row)
+                queued_order = queued_orders_dict.get(order_key)
+                open_position = open_positions_dict.get(order_key)
                 strategy_object = strategies_dict.get(strategy)
 
                 # Add new strategy if it doesn't exist
