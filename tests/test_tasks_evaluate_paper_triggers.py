@@ -236,8 +236,17 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
         open_positions_cursor = MagicMock()
         open_positions_cursor.to_list = AsyncMock(return_value=[])
+        second_expired_options_cursor = MagicMock()
+        second_expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
+        second_open_positions_cursor = MagicMock()
+        second_open_positions_cursor.to_list = AsyncMock(return_value=[])
         self.tasks.async_mongo.open_positions.find = MagicMock(
-            side_effect=[expired_options_cursor, open_positions_cursor]
+            side_effect=[
+                expired_options_cursor,
+                open_positions_cursor,
+                second_expired_options_cursor,
+                second_open_positions_cursor,
+            ]
         )
         self.tasks.async_mongo.closed_positions.insert_one = AsyncMock()
         delete_result = MagicMock()
@@ -291,8 +300,17 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
         open_positions_cursor = MagicMock()
         open_positions_cursor.to_list = AsyncMock(return_value=[])
+        second_expired_options_cursor = MagicMock()
+        second_expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
+        second_open_positions_cursor = MagicMock()
+        second_open_positions_cursor.to_list = AsyncMock(return_value=[])
         self.tasks.async_mongo.open_positions.find = MagicMock(
-            side_effect=[expired_options_cursor, open_positions_cursor]
+            side_effect=[
+                expired_options_cursor,
+                open_positions_cursor,
+                second_expired_options_cursor,
+                second_open_positions_cursor,
+            ]
         )
         self.tasks.async_mongo.closed_positions.insert_one = AsyncMock()
         self.tasks.async_mongo.open_positions.delete_one = AsyncMock()
@@ -307,9 +325,18 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         self.tasks.async_mongo.open_positions.delete_one.assert_not_called()
         self.api_trader.quote_manager.unsubscribe.assert_not_called()
         self.tasks.logger.info.assert_any_call(
-            "[DRY RUN] Would close expired paper option CP    250718C00082500 at 0. "
+            "[DRY RUN] Would close expired paper option CP    250718C00082500 at 0 "
+            "(position_id=expired_position, account_id=paper_account, strategy=STRATEGY_1). "
             "Set AUTO_CLOSE_EXPIRED_PAPER_OPTIONS=True to enable."
         )
+
+        await self.tasks.checkOCOpapertriggers()
+
+        dry_run_calls = [
+            call for call in self.tasks.logger.info.call_args_list
+            if "[DRY RUN] Would close expired paper option" in call.args[0]
+        ]
+        self.assertEqual(len(dry_run_calls), 1)
 
     async def test_checkOCOpapertriggers_subscribes_active_options(self):
         active_position = {

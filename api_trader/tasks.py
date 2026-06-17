@@ -58,6 +58,7 @@ class Tasks:
         self.rejected_inserts_queue = asyncio.Queue()
         self.canceled_inserts_queue = asyncio.Queue()
         self.auto_close_expired_paper_options = os.getenv("AUTO_CLOSE_EXPIRED_PAPER_OPTIONS") == "True"
+        self.expired_paper_option_dry_run_logged_ids = set()
 
         super().__init__()
 
@@ -282,8 +283,15 @@ class Tasks:
         symbol = position.get("Pre_Symbol")
 
         if not self.auto_close_expired_paper_options:
+            position_id = position.get("_id")
+            if position_id in self.expired_paper_option_dry_run_logged_ids:
+                return
+
+            self.expired_paper_option_dry_run_logged_ids.add(position_id)
             self.logger.info(
-                f"[DRY RUN] Would close expired paper option {symbol} at 0. "
+                f"[DRY RUN] Would close expired paper option {symbol} at 0 "
+                f"(position_id={position_id}, account_id={position.get('Account_ID')}, "
+                f"strategy={position.get('Strategy')}). "
                 "Set AUTO_CLOSE_EXPIRED_PAPER_OPTIONS=True to enable."
             )
             return
