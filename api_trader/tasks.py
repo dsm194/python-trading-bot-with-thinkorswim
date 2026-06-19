@@ -424,8 +424,7 @@ class Tasks:
 
         # ✅ Release the lock first, then unsubscribe
         if should_unsubscribe:
-            task = asyncio.create_task(self.quote_manager.unsubscribe([symbol]))
-            await task  # ✅ Ensures completion before function exits
+            await self.quote_manager.unsubscribe([symbol])
 
     def stop(self):
         self.quote_manager.stop_event.set()  # Signal the loop to stop
