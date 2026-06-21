@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -75,6 +75,9 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Simulate the expiration time for the token
         mock_token.get.return_value = 3600  # Token expires in 3600 seconds (1 hour)
         mock_token_metadata.token = mock_token
+        mock_token_metadata.creation_timestamp = datetime(
+            2026, 6, 20, tzinfo=timezone.utc
+        ).timestamp()
         mock_client.token_metadata = mock_token_metadata
 
         # Set the mock client to be returned by client_from_token_file
@@ -92,8 +95,18 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Assert client_from_token_file was called with expected arguments
         mock_client_from_token_file.assert_any_call("test_token_path", 'mock_api_key', 'mock_app_secret', asyncio=True)
 
-        # Assert MongoDB update was called
-        self.mongo_mock.users.update_one.assert_called_once()
+        self.mongo_mock.users.update_one.assert_awaited_once_with(
+            {"Name": "TestUser"},
+            {
+                "$set": {
+                    "Accounts.test_account_id.refresh_exp_date": "2026-06-27"
+                }
+            },
+        )
+        self.assertEqual(
+            self.user_mock["Accounts"]["test_account_id"]["refresh_exp_date"],
+            "2026-06-27",
+        )
 
     @patch('tdameritrade.client_from_token_file')  # Mock client_from_token_file
     @patch('tdameritrade.TDAmeritrade.async_client_from_manual_flow')  # Mock client_from_manual_flow
@@ -112,6 +125,9 @@ class TestTDAmeritrade(unittest.IsolatedAsyncioTestCase):
         # Simulate that token.get() returns 3600 seconds for expiration (1 hour)
         mock_token.get.return_value = 3600
         mock_token_metadata.token = mock_token
+        mock_token_metadata.creation_timestamp = datetime(
+            2026, 6, 20, tzinfo=timezone.utc
+        ).timestamp()
         mock_client.token_metadata = mock_token_metadata
         mock_client_from_token_file.return_value = mock_client  # Mock return value for client_from_token_file
 

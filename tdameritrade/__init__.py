@@ -2,7 +2,7 @@
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import websockets
@@ -145,17 +145,28 @@ class TDAmeritrade:
             self.logger.error(f"Failed to initialize clients. ({modifiedAccountID(self.account_id)})")
             return False
 
-        # Update token expiration and async/stream clients
-        # tokenSeconds = self.async_client.token_metadata.token.get("expires_in", 3600)
-        tokenSeconds = int(self.async_client.token_metadata.token.get("expires_in") or 3600)
-        self.token_expiration = datetime.now() + timedelta(seconds=tokenSeconds)
+        # Schwab refresh tokens expire based on the original token creation time;
+        # refreshing the 30-minute access token does not extend this lifetime.
+        token_created_at = datetime.fromtimestamp(
+            self.async_client.token_metadata.creation_timestamp,
+            tz=timezone.utc,
+        )
+        self.token_expiration = token_created_at + timedelta(days=7)
 
         if not self.stream_client:
             self.stream_client = StreamClient(client=self.async_client)
 
-        # ADD NEW TOKEN DATA TO USER DATA IN DB
-        await self.async_mongo.users.update_one({"Name": self.user["Name"]}, {
-            "$set": {f"{self.account_id}.refresh_exp_date": (self.token_expiration).strftime("%Y-%m-%d")}})
+        refresh_exp_date = self.token_expiration.strftime("%Y-%m-%d")
+        account_id = str(self.account_id)
+        await self.async_mongo.users.update_one(
+            {"Name": self.user["Name"]},
+            {
+                "$set": {
+                    f"Accounts.{account_id}.refresh_exp_date": refresh_exp_date
+                }
+            },
+        )
+        self.user["Accounts"][account_id]["refresh_exp_date"] = refresh_exp_date
 
         self.logger.info("Token refreshed successfully.")
         return True
