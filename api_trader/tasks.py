@@ -467,7 +467,10 @@ class Tasks:
                     "childOrderStrategies": 1,
                     "Pre_Symbol": 1,
                     "Exp_Date": 1,
-                    "Option_Type": 1
+                    "Option_Type": 1,
+                    "Needs_Reconciliation": 1,
+                    "Reconciliation_Reason": 1,
+                    "Reconciliation_Detected_At": 1,
                 }
             )  # Only fetch necessary fields
 
@@ -553,8 +556,72 @@ class Tasks:
                         upsert=False,
                     )
                 )
+
+            await self._flag_terminal_oco_for_reconciliation(position)
         except Exception as e:
             self.logger.error(f"Error processing position: {position} - {e}")
+
+    @staticmethod
+    def _flatten_child_orders(child_orders):
+        flattened = []
+        for child_order in child_orders:
+            nested_orders = child_order.get("childOrderStrategies")
+            if nested_orders:
+                flattened.extend(nested_orders)
+            else:
+                flattened.append(child_order)
+        return flattened
+
+    async def _flag_terminal_oco_for_reconciliation(self, position):
+        if position.get("Needs_Reconciliation"):
+            return False
+
+        child_orders = position.get("childOrderStrategies") or []
+        if isinstance(child_orders, dict):
+            child_orders = [child_orders]
+
+        flattened_orders = self._flatten_child_orders(child_orders)
+        statuses = [order.get("Order_Status") for order in flattened_orders]
+        terminal_without_fill = {"CANCELED", "REJECTED"}
+
+        if not statuses or not all(status in terminal_without_fill for status in statuses):
+            return False
+
+        detected_at = getUTCDatetime()
+        reason = "All OCO child orders are terminal without a fill"
+        reconciliation_fields = {
+            "Needs_Reconciliation": True,
+            "Reconciliation_Reason": reason,
+            "Reconciliation_Detected_At": detected_at,
+        }
+
+        if position.get("_id") is not None:
+            position_filter = {"_id": position["_id"]}
+        else:
+            position_filter = {
+                "Trader": self.user["Name"],
+                "Account_ID": self.account_id,
+                "Symbol": position["Symbol"],
+                "Strategy": position["Strategy"],
+            }
+        position_filter["Needs_Reconciliation"] = {"$ne": True}
+
+        result = await self.async_mongo.open_positions.update_one(
+            position_filter,
+            {"$set": reconciliation_fields},
+        )
+        if result.modified_count == 0:
+            return False
+
+        position.update(reconciliation_fields)
+        message = (
+            f"Live OCO position requires reconciliation: {position['Symbol']} / "
+            f"{position['Strategy']} / account {modifiedAccountID(self.account_id)}. "
+            f"{reason}."
+        )
+        self.logger.critical(message)
+        await asyncio.to_thread(self.api_trader.push.send, message)
+        return True
 
     async def _process_child_order(self, child_order, position):
         """Processes individual child orders and updates status."""

@@ -1,63 +1,49 @@
-from pprint import pprint
-import requests
 import os
 
-import config_loader  # noqa: F401
+import requests
 
-PUSH_API_KEY = os.getenv('PUSH_API_KEY')
+import config_loader  # noqa: F401
 
 
 class PushNotification:
 
     def __init__(self, device_id, logger):
-
-        self.url = 'https://www.pushsafer.com/api'
-
+        self.url = "https://www.pushsafer.com/api"
+        self.api_key = os.getenv("PUSH_API_KEY")
         self.post_fields = {
             "t": "TOS Trading Bot",
-            "m": None,
             "s": 0,
             "v": 1,
             "i": 1,
             "c": "#E94B3C",
             "d": device_id,
             "ut": "TOS Trading Bot",
-            "k": PUSH_API_KEY,
+            "k": self.api_key,
         }
-
         self.logger = logger
 
     def send(self, notification):
-        """ METHOD SENDS PUSH NOTIFICATION TO USER
-
-        Args: 
-            notification ([str]): MESSAGE TO BE SENT
-        """
+        """Send a notification without allowing Pushsafer to stall the bot."""
+        if not self.api_key or not self.post_fields["d"]:
+            self.logger.warning(
+                "Pushsafer is not configured; notification was not sent."
+            )
+            return False
 
         try:
+            payload = {**self.post_fields, "m": notification}
+            response = requests.post(self.url, data=payload, timeout=10)
+            response_data = response.json()
 
-            # RESPONSE: {'status': 1, 'success': 'message transmitted', 'available': 983, 'message_ids': '18265430:34011'}
+            if response_data.get("success") == "message transmitted":
+                self.logger.info("Pushsafer notification sent.")
+                return True
 
-            self.post_fields["m"] = notification
+            self.logger.warning(
+                "Pushsafer notification failed: %s",
+                response_data.get("error", "unknown response"),
+            )
+        except (requests.RequestException, ValueError) as exc:
+            self.logger.error("Pushsafer notification error: %s", exc)
 
-            response = requests.post(self.url, self.post_fields)
-
-            if response.json()["success"] == 'message transmitted':
-
-                self.logger.info(f"Push Sent!\n")
-
-            else:
-
-                self.logger.warning(f"Push Failed!\n")
-
-        except ValueError:
-
-            pass
-
-        except KeyError:
-
-            pass
-
-        except Exception as e:
-
-            self.logger.error(e)
+        return False
