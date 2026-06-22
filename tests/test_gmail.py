@@ -181,6 +181,30 @@ class TestGmail(unittest.TestCase):
     def test_getEmails_no_emails(self):
         asyncio.run(self.async_test_getEmails_no_emails())
 
+    def test_getEmails_empty_poll_heartbeat_is_rate_limited(self):
+        self.gmail._clock = MagicMock(side_effect=[1000, 1299, 1300])
+        asyncio.run(self.async_test_getEmails_empty_poll_heartbeat_is_rate_limited())
+
+    @patch("gmail.Gmail.extractSymbolsFromEmails")
+    async def async_test_getEmails_empty_poll_heartbeat_is_rate_limited(
+        self, mock_extract
+    ):
+        self.mock_service.users().messages().list().execute.return_value = {
+            "resultSizeEstimate": 0
+        }
+
+        await self.gmail.getEmails()
+        await self.gmail.getEmails()
+        await self.gmail.getEmails()
+
+        self.assertEqual(
+            self.mock_logger.info.call_args_list,
+            [
+                unittest.mock.call("Gmail polling active; no new emails."),
+                unittest.mock.call("Gmail polling active; no new emails."),
+            ],
+        )
+
     @patch("gmail.Gmail.extractSymbolsFromEmails")
     async def async_test_getEmails_no_emails(self, mock_extract):
         """Test getEmails when there are no emails (resultSizeEstimate = 0)."""

@@ -13,6 +13,7 @@ import os.path
 import os
 from datetime import datetime, timezone
 import re
+import time
 
 import config_loader  # noqa: F401
 
@@ -27,6 +28,9 @@ class Gmail:
         self.email_cutoff = email_cutoff or datetime.now(timezone.utc)
         if self.email_cutoff.tzinfo is None:
             self.email_cutoff = self.email_cutoff.replace(tzinfo=timezone.utc)
+        self.empty_poll_heartbeat_interval = 300
+        self.last_empty_poll_heartbeat = 0.0
+        self._clock = time.monotonic
 
         self.SCOPES = ["https://mail.google.com/"]
 
@@ -277,7 +281,13 @@ class Gmail:
                     # Move the email to the trash
                     await self._move_to_trash(message["id"])
             else:
-                self.logger.info("No emails found after the bot start time.")
+                current_time = self._clock()
+                if (
+                    current_time - self.last_empty_poll_heartbeat
+                    >= self.empty_poll_heartbeat_interval
+                ):
+                    self.logger.info("Gmail polling active; no new emails.")
+                    self.last_empty_poll_heartbeat = current_time
         except Exception as e:
             self.logger.error(f"Error in getEmails: {e}")
         finally:
