@@ -76,7 +76,7 @@ class Tasks:
 
     async def process_task(self, task):
         """ Process the task in an async manner, simulating the original loop iteration. """
-        print(f"Processing task: {task} ({modifiedAccountID(self.account_id)})")
+        # print(f"Processing task: {task} ({modifiedAccountID(self.account_id)})")
 
         try:
             # Task-specific processing
