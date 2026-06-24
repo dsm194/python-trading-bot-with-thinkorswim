@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from api_trader import ApiTrader, OrderBuilderWrapper
 from api_trader.strategies import fixed_percentage_exit
+from assets.helper_functions import modifiedAccountID
 
 class TestOrderBuilderWrapper(unittest.TestCase):
 
@@ -500,6 +501,8 @@ class TestOrderBuilderWrapper(unittest.TestCase):
         self.assertIsNone(result[0])  # The order should not be created
         api_trader.logger.warning.assert_called_with(
             f"Order stopped: BUY order for AAPL not placed. "
+            f"Account: {modifiedAccountID(api_trader.account_id)}; Account_Position: Unknown; "
+            f"Strategy: FixedPercentageExit; "
             f"Required position size $5500.0 exceeds max position size for this strategy. "
             f"Strategy status: {strategy_object['Active']}, Shares: 10, Max position size: $5000"
         )

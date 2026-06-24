@@ -9,7 +9,7 @@ from schwab.orders.options import (option_buy_to_open_limit,
                                    option_sell_to_close_limit)
 
 from api_trader.strategies import fixed_percentage_exit, trailing_stop_exit
-from assets.helper_functions import getUTCDatetime
+from assets.helper_functions import getUTCDatetime, modifiedAccountID
 from tdameritrade import TDAmeritrade
 
 import config_loader  # noqa: F401
@@ -158,6 +158,10 @@ class OrderBuilderWrapper:
         side = trade_data["Side"]
         strategy = trade_data["Strategy"]
         asset_type = AssetType.OPTION if "Pre_Symbol" in trade_data else AssetType.EQUITY
+        account_label = modifiedAccountID(account_id)
+        account_position = user.get("Accounts", {}).get(str(account_id), {}).get(
+            "Account_Position", "Unknown"
+        )
 
         ##############################################################
 
@@ -257,6 +261,8 @@ class OrderBuilderWrapper:
                 if current_allocated + new_allocation > float(max_position_size):
                     self.logger.warning(
                         f"Order stopped: {side} order for {symbol} not placed. "
+                        f"Account: {account_label}; Account_Position: {account_position}; "
+                        f"Strategy: {strategy}; "
                         f"Required position size ${current_allocated + new_allocation} exceeds max position size for this strategy. "
                         f"Strategy status: {strategy_object['Active']}, Shares: {shares}, Max position size: ${max_position_size}"
                     )
@@ -277,7 +283,12 @@ class OrderBuilderWrapper:
                     "Entry_Date": getUTCDatetime(),
                 })
             else:
-                self.logger.warning(f"{side} ORDER STOPPED: STRATEGY: {strategy}; ACTIVE: {strategy_object['Active']}; SYMBOL: {symbol}; SHARES: {shares}; PRICE: {price}; POSITION_SIZE: {position_size};")
+                self.logger.warning(
+                    f"{side} ORDER STOPPED: Account: {account_label}; "
+                    f"Account_Position: {account_position}; STRATEGY: {strategy}; "
+                    f"ACTIVE: {strategy_object['Active']}; SYMBOL: {symbol}; "
+                    f"SHARES: {shares}; PRICE: {price}; POSITION_SIZE: {position_size};"
+                )
                 return None, None
 
         # IF CLOSING A POSITION

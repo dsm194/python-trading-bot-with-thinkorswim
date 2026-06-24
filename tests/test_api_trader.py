@@ -1085,6 +1085,103 @@ class TestApiTrader(unittest.IsolatedAsyncioTestCase):
             "OPEN POSITION"
         )
 
+    @patch('api_trader.ApiTrader.__init__', return_value=None)
+    @patch('api_trader.ApiTrader.sendOrder')
+    async def test_run_trader_processes_multiple_strategies_for_same_symbol(self, mock_sendOrder, mock_init):
+        self.user_mock = {"Name": "TestUser"}
+        self.api_trader.async_mongo = MagicMock()
+        self.api_trader.logger = MagicMock()
+        self.api_trader.account_id = "test_account"
+        self.api_trader.updateStatus = AsyncMock()
+
+        self.api_trader.async_mongo.users.find_one = AsyncMock(return_value=self.user_mock)
+
+        mock_open_positions_cursor = MagicMock()
+        mock_open_positions_cursor.to_list = AsyncMock(return_value=[])
+        self.api_trader.async_mongo.open_positions.find = MagicMock(
+            return_value=mock_open_positions_cursor
+        )
+
+        mock_queue_cursor = MagicMock()
+        mock_queue_cursor.to_list = AsyncMock(return_value=[])
+        self.api_trader.async_mongo.queue.find = MagicMock(return_value=mock_queue_cursor)
+
+        mock_strategies_cursor = MagicMock()
+        mock_strategies_cursor.to_list = AsyncMock(return_value=[
+            {
+                "Strategy": "STRATEGY_A",
+                "Account_ID": "test_account",
+                "Position_Type": "LONG",
+                "Order_Type": "STANDARD",
+            },
+            {
+                "Strategy": "STRATEGY_B",
+                "Account_ID": "test_account",
+                "Position_Type": "LONG",
+                "Order_Type": "STANDARD",
+            },
+        ])
+        self.api_trader.async_mongo.strategies.find.return_value = mock_strategies_cursor
+
+        mock_forbidden_cursor = MagicMock()
+        mock_forbidden_cursor.to_list = AsyncMock(return_value=[])
+        self.api_trader.async_mongo.forbidden.find = MagicMock(
+            return_value=mock_forbidden_cursor
+        )
+
+        trade_data = [
+            {
+                "Symbol": "AAPL",
+                "Strategy": "STRATEGY_A",
+                "Side": "BUY",
+                "Asset_Type": "EQUITY",
+            },
+            {
+                "Symbol": "AAPL",
+                "Strategy": "STRATEGY_B",
+                "Side": "BUY",
+                "Asset_Type": "EQUITY",
+            },
+        ]
+
+        await self.api_trader.runTrader(trade_data=trade_data)
+
+        self.assertEqual(mock_sendOrder.await_count, 2)
+        mock_sendOrder.assert_has_awaits([
+            mock.call(
+                {
+                    "Symbol": "AAPL",
+                    "Strategy": "STRATEGY_A",
+                    "Side": "BUY",
+                    "Asset_Type": "EQUITY",
+                    "Position_Type": "LONG",
+                },
+                {
+                    "Strategy": "STRATEGY_A",
+                    "Account_ID": "test_account",
+                    "Position_Type": "LONG",
+                    "Order_Type": "STANDARD",
+                },
+                "OPEN POSITION",
+            ),
+            mock.call(
+                {
+                    "Symbol": "AAPL",
+                    "Strategy": "STRATEGY_B",
+                    "Side": "BUY",
+                    "Asset_Type": "EQUITY",
+                    "Position_Type": "LONG",
+                },
+                {
+                    "Strategy": "STRATEGY_B",
+                    "Account_ID": "test_account",
+                    "Position_Type": "LONG",
+                    "Order_Type": "STANDARD",
+                },
+                "OPEN POSITION",
+            ),
+        ])
+
     @patch('api_trader.ApiTrader.__init__', return_value=None)  # Mock constructor to avoid actual init
     @patch('api_trader.ApiTrader.sendOrder')
     async def test_runTrader_with_dynamic_round_trip_orders(self, mock_sendOrder, mock_init):

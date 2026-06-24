@@ -137,13 +137,22 @@ class ApiTrader(OrderBuilderWrapper):
         strategy = trade_data["Strategy"]
         side = trade_data["Side"]
         order_type = strategy_object["Order_Type"]
+        account_id = getattr(self, "account_id", None)
+        account_label = modifiedAccountID(account_id) if account_id is not None else "Unknown"
+        user = getattr(self, "user", {}) or {}
+        account_position = user.get("Accounts", {}).get(
+            str(account_id), {}
+        ).get("Account_Position", "Unknown")
 
         if self.RUN_LIVE_TRADER and not self.LIVE_ORDER_SUBMISSION_ENABLED:
             self.logger.critical(
-                "Live %s order blocked for %s: "
+                "Live %s order blocked for %s (%s, %s, %s): "
                 "LIVE_ORDER_SUBMISSION_ENABLED is not True.",
                 direction.lower(),
                 symbol,
+                account_label,
+                account_position,
+                strategy,
             )
             return False
 
@@ -153,9 +162,12 @@ class ApiTrader(OrderBuilderWrapper):
             and not self.LIVE_OPENING_ORDERS_ENABLED
         ):
             self.logger.critical(
-                "Live opening order blocked for %s: "
+                "Live opening order blocked for %s (%s, %s, %s): "
                 "LIVE_OPENING_ORDERS_ENABLED is not True.",
                 symbol,
+                account_label,
+                account_position,
+                strategy,
             )
             return False
 
@@ -173,7 +185,13 @@ class ApiTrader(OrderBuilderWrapper):
             return False
 
         if order is None or obj is None:
-            self.logger.warning(f"Order creation failed for {symbol}.")
+            self.logger.warning(
+                "Order creation failed for %s (%s, %s, %s).",
+                symbol,
+                account_label,
+                account_position,
+                strategy,
+            )
             return False
 
         # Place live trade orders
@@ -192,9 +210,12 @@ class ApiTrader(OrderBuilderWrapper):
                     or projected_notional > self.MAX_LIVE_SESSION_OPEN_NOTIONAL
                 ):
                     self.logger.critical(
-                        "Live opening order blocked for %s: projected session "
+                        "Live opening order blocked for %s (%s, %s, %s): projected session "
                         "notional $%.2f exceeds configured limit $%.2f.",
                         symbol,
+                        account_label,
+                        account_position,
+                        strategy,
                         projected_notional,
                         self.MAX_LIVE_SESSION_OPEN_NOTIONAL,
                     )
