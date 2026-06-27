@@ -61,6 +61,10 @@ class Tasks:
         self.rejected_inserts_queue = asyncio.Queue()
         self.canceled_inserts_queue = asyncio.Queue()
         self.auto_close_expired_paper_options = os.getenv("AUTO_CLOSE_EXPIRED_PAPER_OPTIONS") == "True"
+        self.auto_replace_terminal_live_oco = os.getenv("AUTO_REPLACE_TERMINAL_LIVE_OCO") == "True"
+        self.live_oco_replacement_lookback_days = int(
+            os.getenv("LIVE_OCO_REPLACEMENT_LOOKBACK_DAYS", "7")
+        )
         self.expired_paper_option_dry_run_logged_ids = _EXPIRED_PAPER_OPTION_DRY_RUN_LOGGED_IDS
 
         super().__init__()
@@ -532,6 +536,14 @@ class Tasks:
                 except Exception as e:
                     self.logger.error(f"Error processing child order: {child_order} - {e}")
 
+            if await self._adopt_replacement_oco_if_available(position):
+                return
+
+            if await self._auto_replace_terminal_oco_if_enabled(position):
+                return
+
+            await self._flag_terminal_oco_for_reconciliation(position)
+
             if status_changed:
                 filter_query = (
                     {"_id": position["_id"]}
@@ -556,8 +568,6 @@ class Tasks:
                         upsert=False,
                     )
                 )
-
-            await self._flag_terminal_oco_for_reconciliation(position)
         except Exception as e:
             self.logger.error(f"Error processing position: {position} - {e}")
 
@@ -576,15 +586,7 @@ class Tasks:
         if position.get("Needs_Reconciliation"):
             return False
 
-        child_orders = position.get("childOrderStrategies") or []
-        if isinstance(child_orders, dict):
-            child_orders = [child_orders]
-
-        flattened_orders = self._flatten_child_orders(child_orders)
-        statuses = [order.get("Order_Status") for order in flattened_orders]
-        terminal_without_fill = {"CANCELED", "REJECTED"}
-
-        if not statuses or not all(status in terminal_without_fill for status in statuses):
+        if not self._has_terminal_oco_without_fill(position):
             return False
 
         detected_at = getUTCDatetime()
@@ -622,6 +624,274 @@ class Tasks:
         self.logger.critical(message)
         await asyncio.to_thread(self.api_trader.push.send, message)
         return True
+
+    def _has_terminal_oco_without_fill(self, position):
+        child_orders = position.get("childOrderStrategies") or []
+        if isinstance(child_orders, dict):
+            child_orders = [child_orders]
+
+        flattened_orders = self._flatten_child_orders(child_orders)
+        statuses = [order.get("Order_Status") for order in flattened_orders]
+        terminal_without_fill = {"CANCELED", "REJECTED", "EXPIRED"}
+
+        return bool(statuses) and all(status in terminal_without_fill for status in statuses)
+
+    async def _adopt_replacement_oco_if_available(self, position):
+        if not self._has_terminal_oco_without_fill(position):
+            return False
+
+        replacement_order = await self._find_replacement_oco_order(position)
+        if not replacement_order:
+            return False
+
+        if await self._replacement_oco_is_ambiguous(position, replacement_order):
+            self.logger.warning(
+                f"Replacement OCO order {replacement_order.get('Order_ID')} "
+                f"for {position['Symbol']} matches multiple Mongo positions; "
+                "leaving position for reconciliation."
+            )
+            return False
+
+        replacement_children = self.extractOCOchildren(replacement_order).get(
+            "childOrderStrategies"
+        )
+        if not replacement_children:
+            return False
+
+        update_fields = {
+            "childOrderStrategies": replacement_children,
+            "Needs_Reconciliation": False,
+            "Reconciliation_Reason": None,
+            "Reconciliation_Detected_At": None,
+            "Replacement_OCO_Order_ID": replacement_order.get("Order_ID"),
+            "Replacement_OCO_Adopted_At": getUTCDatetime(),
+        }
+        await self.async_mongo.open_positions.update_one(
+            {"_id": position["_id"]},
+            {"$set": update_fields},
+        )
+        position.update(update_fields)
+        self.logger.info(
+            f"Adopted replacement OCO order {replacement_order.get('Order_ID')} "
+            f"for {position['Symbol']} ({modifiedAccountID(self.account_id)})."
+        )
+        return True
+
+    async def _find_replacement_oco_order(self, position):
+        lookback_start = getUTCDatetime() - dt.timedelta(
+            days=self.live_oco_replacement_lookback_days
+        )
+        try:
+            orders = await self.tdameritrade.getOrdersAsync(
+                from_entered_datetime=lookback_start,
+                to_entered_datetime=getUTCDatetime(),
+            )
+        except (AttributeError, TypeError) as e:
+            self.logger.warning(
+                f"Could not search account orders for replacement OCO: {e}"
+            )
+            return None
+        except Exception as e:
+            self.logger.error(
+                f"Error searching account orders for replacement OCO: {e}"
+            )
+            return None
+
+        for order in orders:
+            if self._is_matching_working_exit_order(order, position):
+                return order
+        return None
+
+    async def _replacement_oco_is_ambiguous(self, position, order):
+        position_filter = {
+            "Trader": self.user["Name"],
+            "Account_ID": self.account_id,
+            "Symbol": position.get("Symbol"),
+            "Asset_Type": position.get("Asset_Type"),
+            "Order_Type": "OCO",
+            "Account_Position": "Live",
+            "Qty": position.get("Qty"),
+        }
+        if position.get("_id") is not None:
+            position_filter["_id"] = {"$ne": position["_id"]}
+        if position.get("Asset_Type") == "OPTION":
+            position_filter["Pre_Symbol"] = position.get("Pre_Symbol")
+
+        try:
+            cursor = self.async_mongo.open_positions.find(
+                position_filter,
+                {
+                    "_id": 1,
+                    "Symbol": 1,
+                    "Pre_Symbol": 1,
+                    "Asset_Type": 1,
+                    "Qty": 1,
+                    "childOrderStrategies": 1,
+                },
+            )
+            candidates = await cursor.to_list(None)
+        except Exception as e:
+            self.logger.warning(
+                f"Could not check replacement OCO ambiguity for {position.get('Symbol')}: {e}"
+            )
+            return True
+
+        return any(
+            self._is_matching_working_exit_order(order, candidate)
+            for candidate in candidates
+        )
+
+    def _is_matching_working_exit_order(self, order, position):
+        flattened_orders = self._flatten_child_orders(
+            order.get("childOrderStrategies") or [order]
+        )
+        if len(flattened_orders) < 1:
+            return False
+
+        active_statuses = {"WORKING", "QUEUED", "PENDING_ACTIVATION", "ACCEPTED"}
+        statuses = {child.get("status") or child.get("Order_Status") for child in flattened_orders}
+        order_status = order.get("status") or order.get("Order_Status")
+        if order_status:
+            statuses.add(order_status)
+        if not statuses.intersection(active_statuses):
+            return False
+
+        expected_symbol = (
+            position.get("Pre_Symbol")
+            if position.get("Asset_Type") == "OPTION"
+            else position.get("Symbol")
+        )
+        expected_qty = int(position.get("Qty") or 0)
+
+        for child in flattened_orders:
+            legs = child.get("orderLegCollection") or []
+            if not legs:
+                return False
+
+            leg = legs[0]
+            instrument = leg.get("instrument") or {}
+            symbol = leg.get("symbol") or instrument.get("symbol")
+            quantity = int(float(leg.get("quantity", child.get("quantity", 0)) or 0))
+
+            if symbol != expected_symbol or quantity != expected_qty:
+                return False
+
+        expected_exit_prices = self._exit_price_set(
+            self._flatten_child_orders(position.get("childOrderStrategies") or [])
+        )
+        if expected_exit_prices:
+            order_exit_prices = self._exit_price_set(flattened_orders)
+            if expected_exit_prices != order_exit_prices:
+                return False
+
+        return True
+
+    @staticmethod
+    def _exit_price_set(child_orders):
+        prices = set()
+        for child_order in child_orders:
+            price = child_order.get(
+                "Exit_Price",
+                child_order.get(
+                    "stopPrice",
+                    child_order.get("activationPrice", child_order.get("price")),
+                ),
+            )
+            if price is None:
+                continue
+            try:
+                prices.add(round(float(price), 4))
+            except (TypeError, ValueError):
+                continue
+        return prices
+
+    async def _auto_replace_terminal_oco_if_enabled(self, position):
+        if not self._has_terminal_oco_without_fill(position):
+            return False
+
+        if not self.auto_replace_terminal_live_oco:
+            return False
+
+        strategy = await self.async_mongo.strategies.find_one(
+            {
+                "Account_ID": self.account_id,
+                "Strategy": position["Strategy"],
+                "Asset_Type": position["Asset_Type"],
+            }
+        )
+        if not strategy:
+            self.logger.error(
+                f"Cannot auto-replace OCO for {position['Symbol']}: strategy not found."
+            )
+            return False
+
+        exit_strategy = self.api_trader.load_strategy(strategy)
+        additional_params = self._build_exit_order_params(position)
+        exit_result = exit_strategy.should_exit(additional_params)
+        replacement_order = exit_strategy.create_exit_order(exit_result)
+        order_details = await self.tdameritrade.placeTDAOrderAsync(replacement_order)
+
+        if not order_details or "Order_ID" not in order_details:
+            self.logger.error(
+                f"Auto-replacement OCO rejected or missing order id for {position['Symbol']}."
+            )
+            return False
+
+        replacement_children = self.extractOCOchildren(order_details).get(
+            "childOrderStrategies"
+        )
+        if not replacement_children:
+            self.logger.error(
+                f"Auto-replacement OCO {order_details.get('Order_ID')} for "
+                f"{position['Symbol']} returned no child order ids."
+            )
+            return False
+
+        update_fields = {
+            "childOrderStrategies": replacement_children,
+            "Needs_Reconciliation": False,
+            "Reconciliation_Reason": None,
+            "Reconciliation_Detected_At": None,
+            "Replacement_OCO_Order_ID": order_details.get("Order_ID"),
+            "Replacement_OCO_Placed_At": getUTCDatetime(),
+        }
+        await self.async_mongo.open_positions.update_one(
+            {"_id": position["_id"]},
+            {"$set": update_fields},
+        )
+        position.update(update_fields)
+
+        message = (
+            f"Auto-replaced terminal OCO protection for {position['Symbol']} / "
+            f"{position['Strategy']} / account {modifiedAccountID(self.account_id)}."
+        )
+        self.logger.critical(message)
+        await asyncio.to_thread(self.api_trader.push.send, message)
+        return True
+
+    def _build_exit_order_params(self, position):
+        from api_trader.order_builder import AssetType
+
+        asset_type = position.get("Asset_Type")
+        if asset_type == AssetType.OPTION:
+            side = position.get("Side")
+            if side not in {"BUY_TO_OPEN", "SELL_TO_OPEN"}:
+                side = "BUY_TO_OPEN" if position.get("Position_Type") == "LONG" else "SELL_TO_OPEN"
+        else:
+            side = position.get("Side")
+            if side not in {"BUY", "SELL"}:
+                side = "BUY" if position.get("Position_Type") == "LONG" else "SELL"
+
+        return {
+            "entry_price": position["Entry_Price"],
+            "quantity": position["Qty"],
+            "last_price": position["Entry_Price"],
+            "max_price": position.get("Max_Price", position["Entry_Price"]),
+            "symbol": position["Symbol"],
+            "pre_symbol": position.get("Pre_Symbol"),
+            "side": side,
+            "assetType": asset_type,
+        }
 
     async def _process_child_order(self, child_order, position):
         """Processes individual child orders and updates status."""
@@ -664,7 +934,7 @@ class Tasks:
             return False
 
         # Handle REJECTED or CANCELED status
-        elif new_status in ["CANCELED", "REJECTED"]:
+        elif new_status in ["CANCELED", "REJECTED", "EXPIRED"]:
             child_order["Order_Status"] = new_status
             other = {
                 "Symbol": position["Symbol"],

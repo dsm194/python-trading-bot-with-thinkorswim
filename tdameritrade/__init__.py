@@ -710,6 +710,45 @@ class TDAmeritrade:
             self.logger.error(f"An error occurred while attempting to get specific order: {order_id}. Error: {e} ({modifiedAccountID(self.account_id)})")
             return None
 
+    async def getOrdersAsync(self, from_entered_datetime=None, to_entered_datetime=None, status=None, max_results=None):
+        """Retrieve account orders asynchronously."""
+        is_valid = await self.checkTokenValidityAsync()
+        if not is_valid:
+            self.logger.warning(f"Token invalid, cannot retrieve orders ({modifiedAccountID(self.account_id)})")
+            return []
+
+        account_hash = await self.get_account_hash()
+        if not account_hash:
+            self.logger.error(f"Account hash missing in response. ({modifiedAccountID(self.account_id)})")
+            return []
+
+        kwargs = {}
+        if from_entered_datetime is not None:
+            kwargs["from_entered_datetime"] = from_entered_datetime
+        if to_entered_datetime is not None:
+            kwargs["to_entered_datetime"] = to_entered_datetime
+        if status is not None:
+            kwargs["status"] = status
+        if max_results is not None:
+            kwargs["max_results"] = max_results
+
+        try:
+            response = await self.async_client.get_orders_for_account(account_hash, **kwargs)
+            self.logger.debug(f"Orders API Response: Status={response.status_code}, Body={response.text}")
+
+            if response.status_code != 200:
+                self.logger.error(f"Failed to get account orders. HTTP Status: {response.status_code} ({modifiedAccountID(self.account_id)})")
+                return []
+
+            orders = response.json()
+            return self.rename_order_ids(orders or [])
+        except AttributeError:
+            self.logger.error("Schwab async client does not support get_orders_for_account; cannot reconcile replacement OCO orders.")
+            return []
+        except Exception as e:
+            self.logger.error(f"An error occurred while attempting to get account orders. Error: {e} ({modifiedAccountID(self.account_id)})")
+            return []
+
     async def cancelOrder(self, order_id):
         """ METHOD CANCELS ORDER
 
