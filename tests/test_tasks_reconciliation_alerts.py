@@ -326,3 +326,101 @@ class TestTasksReconciliationAlerts(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(adopted)
         self.tasks.async_mongo.open_positions.update_one.assert_awaited_once()
+
+    async def test_single_replacement_oco_is_adopted_when_prices_changed(self):
+        self.tasks.tdameritrade.getOrdersAsync = AsyncMock(return_value=[
+            {
+                "Order_ID": 999,
+                "status": "WORKING",
+                "orderStrategyType": "OCO",
+                "childOrderStrategies": [
+                    {
+                        "Order_ID": 1001,
+                        "status": "WORKING",
+                        "price": 16.5,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "symbol": "DBRG", "quantity": 32}
+                        ],
+                    },
+                    {
+                        "Order_ID": 1002,
+                        "status": "WORKING",
+                        "stopPrice": 14.5,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "symbol": "DBRG", "quantity": 32}
+                        ],
+                    },
+                ],
+            }
+        ])
+        position = {
+            "_id": "position-1",
+            "Symbol": "DBRG",
+            "Strategy": "HULLMA_RTG_TREND3_4WK+10",
+            "Asset_Type": "EQUITY",
+            "Qty": 32,
+            "childOrderStrategies": [
+                {"Order_ID": 1, "Order_Status": "EXPIRED", "Exit_Price": 16.22},
+                {"Order_ID": 2, "Order_Status": "EXPIRED", "Exit_Price": 14.84},
+            ],
+        }
+
+        adopted = await self.tasks._adopt_replacement_oco_if_available(position)
+
+        self.assertTrue(adopted)
+        self.tasks.async_mongo.open_positions.update_one.assert_awaited_once()
+        self.tasks.logger.warning.assert_called()
+
+    async def test_reconciled_position_still_retries_replacement_adoption(self):
+        self.tasks.tdameritrade.getSpecificOrderAsync = AsyncMock(
+            return_value={"status": "EXPIRED"}
+        )
+        self.tasks.tdameritrade.getOrdersAsync = AsyncMock(return_value=[
+            {
+                "Order_ID": 1006946630841,
+                "status": "WORKING",
+                "orderStrategyType": "OCO",
+                "childOrderStrategies": [
+                    {
+                        "Order_ID": 1006946630842,
+                        "status": "WORKING",
+                        "price": 16.22,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "symbol": "DBRG", "quantity": 32}
+                        ],
+                    },
+                    {
+                        "Order_ID": 1006946630843,
+                        "status": "WORKING",
+                        "stopPrice": 14.82,
+                        "orderLegCollection": [
+                            {"instruction": "SELL", "symbol": "DBRG", "quantity": 32}
+                        ],
+                    },
+                ],
+            }
+        ])
+        position = {
+            "_id": "position-1",
+            "Symbol": "DBRG",
+            "Strategy": "HULLMA_RTG_TREND3_4WK+10",
+            "Account_ID": "1113",
+            "Asset_Type": "EQUITY",
+            "Account_Position": "Live",
+            "Order_Type": "OCO",
+            "Qty": 32,
+            "Needs_Reconciliation": True,
+            "Reconciliation_Reason": "All OCO child orders are terminal without a fill",
+            "childOrderStrategies": [
+                {"Order_ID": 1005007737566, "Order_Status": "EXPIRED", "Exit_Price": 16.22},
+                {"Order_ID": 1005007737567, "Order_Status": "EXPIRED", "Exit_Price": 14.84},
+            ],
+        }
+
+        await self.tasks._process_position(position)
+
+        self.tasks.async_mongo.open_positions.update_one.assert_awaited_once()
+        update = self.tasks.async_mongo.open_positions.update_one.call_args.args[1]
+        self.assertFalse(update["$set"]["Needs_Reconciliation"])
+        self.assertEqual(update["$set"]["Replacement_OCO_Order_ID"], 1006946630841)
+        self.assertEqual(position["Replacement_OCO_Order_ID"], 1006946630841)

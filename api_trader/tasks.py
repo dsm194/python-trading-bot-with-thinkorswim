@@ -697,9 +697,45 @@ class Tasks:
             )
             return None
 
-        for order in orders:
-            if self._is_matching_working_exit_order(order, position):
-                return order
+        candidates = [
+            order for order in orders
+            if self._is_matching_working_exit_order(
+                order, position, require_exit_price_match=False
+            )
+        ]
+        if not candidates:
+            self.logger.info(
+                f"No active replacement OCO candidate found for {position.get('Symbol')} "
+                f"qty {position.get('Qty')}."
+            )
+            return None
+
+        price_matched_candidates = [
+            order for order in candidates
+            if self._exit_prices_match_order(position, order)
+        ]
+        if len(price_matched_candidates) == 1:
+            return price_matched_candidates[0]
+
+        if len(price_matched_candidates) > 1:
+            self.logger.warning(
+                f"Multiple replacement OCO candidates matched exit prices for "
+                f"{position.get('Symbol')} qty {position.get('Qty')}; leaving for reconciliation."
+            )
+            return None
+
+        if len(candidates) == 1:
+            self.logger.warning(
+                f"Adopting the only active replacement OCO candidate for {position.get('Symbol')} "
+                f"qty {position.get('Qty')} even though exit prices differ from Mongo."
+            )
+            return candidates[0]
+
+        self.logger.warning(
+            f"Multiple active replacement OCO candidates found for {position.get('Symbol')} "
+            f"qty {position.get('Qty')}, and none matched stored exit prices; "
+            "leaving for reconciliation."
+        )
         return None
 
     async def _replacement_oco_is_ambiguous(self, position, order):
@@ -736,12 +772,23 @@ class Tasks:
             )
             return True
 
-        return any(
-            self._is_matching_working_exit_order(order, candidate)
-            for candidate in candidates
-        )
+        current_price_match = self._exit_prices_match_order(position, order)
+        for candidate in candidates:
+            if not self._is_matching_working_exit_order(
+                order, candidate, require_exit_price_match=False
+            ):
+                continue
 
-    def _is_matching_working_exit_order(self, order, position):
+            candidate_price_match = self._exit_prices_match_order(candidate, order)
+            if current_price_match:
+                if candidate_price_match:
+                    return True
+            else:
+                return True
+
+        return False
+
+    def _is_matching_working_exit_order(self, order, position, require_exit_price_match=True):
         flattened_orders = self._flatten_child_orders(
             order.get("childOrderStrategies") or [order]
         )
@@ -776,15 +823,22 @@ class Tasks:
             if symbol != expected_symbol or quantity != expected_qty:
                 return False
 
+        if require_exit_price_match and not self._exit_prices_match_order(position, order):
+            return False
+
+        return True
+
+    def _exit_prices_match_order(self, position, order):
         expected_exit_prices = self._exit_price_set(
             self._flatten_child_orders(position.get("childOrderStrategies") or [])
         )
-        if expected_exit_prices:
-            order_exit_prices = self._exit_price_set(flattened_orders)
-            if expected_exit_prices != order_exit_prices:
-                return False
+        if not expected_exit_prices:
+            return False
 
-        return True
+        order_exit_prices = self._exit_price_set(
+            self._flatten_child_orders(order.get("childOrderStrategies") or [order])
+        )
+        return expected_exit_prices == order_exit_prices
 
     @staticmethod
     def _exit_price_set(child_orders):
