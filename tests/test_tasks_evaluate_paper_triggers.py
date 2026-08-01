@@ -398,8 +398,8 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
         active_position = {
             "_id": "active_position",
             "Symbol": "CP",
-            "Pre_Symbol": "CP    260718C00082500",
-            "Exp_Date": "2026-07-18",
+            "Pre_Symbol": "CP    270718C00082500",
+            "Exp_Date": "2027-07-18",
             "Option_Type": "CALL",
             "Strategy": "STRATEGY_1",
             "Account_ID": "paper_account",
@@ -438,8 +438,86 @@ class TestEvaluatePaperTriggers(unittest.IsolatedAsyncioTestCase):
 
         self.tasks.async_mongo.closed_positions.insert_one.assert_not_called()
         self.api_trader.quote_manager.add_quotes.assert_awaited_once_with([
-            {"symbol": "CP    260718C00082500", "asset_type": "OPTION"}
+            {"symbol": "CP    270718C00082500", "asset_type": "OPTION"}
         ])
+
+    async def test_checkOCOpapertriggers_skips_streaming_when_disabled(self):
+        self.tasks.user = {"Name": "TestUser"}
+        self.tasks.account_id = "paper_account"
+        self.tasks.streaming_quotes_enabled = False
+        self.tasks.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={"isOpen": True})
+        self.api_trader.quote_manager.subscribed_symbols = {}
+        self.api_trader.quote_manager.add_callback = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
+
+        expired_options_cursor = MagicMock()
+        expired_options_cursor.to_list = AsyncMock(return_value=[])
+        self.tasks.async_mongo.open_positions.find = MagicMock(
+            return_value=expired_options_cursor
+        )
+
+        await self.tasks.checkOCOpapertriggers()
+
+        self.tasks.async_mongo.open_positions.find.assert_called_once()
+        self.tasks.async_mongo.closed_positions.insert_one.assert_not_called()
+        self.api_trader.quote_manager.add_callback.assert_not_called()
+        self.api_trader.quote_manager.add_quotes.assert_not_called()
+        self.tasks.tdameritrade.getMarketHoursAsync.assert_not_called()
+        self.tasks.async_mongo.strategies.find.assert_not_called()
+        self.tasks.logger.info.assert_any_call(
+            "Streaming quotes are disabled; skipping paper quote subscriptions "
+            "and quote-driven paper exit evaluation."
+        )
+
+    async def test_checkOCOpapertriggers_still_closes_expired_options_when_streaming_disabled(self):
+        expired_position = {
+            "_id": "expired_position",
+            "Symbol": "CP",
+            "Pre_Symbol": "CP    250718C00082500",
+            "Exp_Date": "2025-07-18",
+            "Option_Type": "CALL",
+            "Strategy": "STRATEGY_1",
+            "Account_ID": "paper_account",
+            "Asset_Type": "OPTION",
+            "Order_Type": "STANDARD",
+            "Qty": 1,
+            "Entry_Price": 2.85,
+            "Entry_Date": dt.datetime(2025, 7, 1, tzinfo=dt.timezone.utc),
+            "Side": "BUY_TO_OPEN",
+            "Position_Size": 285,
+            "Position_Type": "LONG",
+            "Account_Position": "Paper",
+        }
+
+        self.tasks.user = {"Name": "TestUser"}
+        self.tasks.account_id = "paper_account"
+        self.tasks.auto_close_expired_paper_options = True
+        self.tasks.streaming_quotes_enabled = False
+        self.tasks.tdameritrade.getMarketHoursAsync = AsyncMock(return_value={"isOpen": True})
+        self.api_trader.quote_manager.subscribed_symbols = {
+            "CP    250718C00082500": {"symbol": "CP    250718C00082500", "asset_type": "OPTION"}
+        }
+        self.api_trader.quote_manager.add_callback = AsyncMock()
+        self.api_trader.quote_manager.add_quotes = AsyncMock()
+
+        expired_options_cursor = MagicMock()
+        expired_options_cursor.to_list = AsyncMock(return_value=[expired_position])
+        self.tasks.async_mongo.open_positions.find = MagicMock(
+            return_value=expired_options_cursor
+        )
+        self.tasks.async_mongo.closed_positions.insert_one = AsyncMock()
+        delete_result = MagicMock()
+        delete_result.deleted_count = 1
+        self.tasks.async_mongo.open_positions.delete_one = AsyncMock(return_value=delete_result)
+
+        await self.tasks.checkOCOpapertriggers()
+
+        self.tasks.async_mongo.closed_positions.insert_one.assert_awaited_once()
+        self.tasks.async_mongo.open_positions.delete_one.assert_awaited_once_with({"_id": "expired_position"})
+        self.api_trader.quote_manager.unsubscribe.assert_awaited_once_with(["CP    250718C00082500"])
+        self.api_trader.quote_manager.add_callback.assert_not_called()
+        self.api_trader.quote_manager.add_quotes.assert_not_called()
+        self.tasks.tdameritrade.getMarketHoursAsync.assert_not_called()
 
 
 if __name__ == "__main__":

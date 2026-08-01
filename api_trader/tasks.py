@@ -61,6 +61,7 @@ class Tasks:
         self.rejected_inserts_queue = asyncio.Queue()
         self.canceled_inserts_queue = asyncio.Queue()
         self.auto_close_expired_paper_options = os.getenv("AUTO_CLOSE_EXPIRED_PAPER_OPTIONS") == "True"
+        self.streaming_quotes_enabled = os.getenv("STREAMING_QUOTES_ENABLED", "True") == "True"
         self.auto_replace_terminal_live_oco = os.getenv("AUTO_REPLACE_TERMINAL_LIVE_OCO") == "True"
         self.live_oco_replacement_lookback_days = int(
             os.getenv("LIVE_OCO_REPLACEMENT_LOOKBACK_DAYS", "7")
@@ -116,14 +117,6 @@ class Tasks:
     async def checkOCOpapertriggers(self):
         dtNow = getUTCDatetime()
 
-        # Protect cached market hours access
-        async with self.lock:
-            if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:
-                self._cached_market_hours = await self.tdameritrade.getMarketHoursAsync(date=dtNow)
-                self._cached_market_hours_timestamp = time.time()
-
-        await self.quote_manager.add_callback(self.evaluate_paper_triggers)
-
         position_projection = {
             "_id": 1,
             "Order_ID": 1,
@@ -169,6 +162,22 @@ class Tasks:
         for position in expired_options:
             if self._is_expired_paper_option(position, today):
                 await self._close_expired_paper_option(position, dtNow)
+
+        if not self.streaming_quotes_enabled:
+            self.logger.info(
+                "Streaming quotes are disabled; skipping paper quote subscriptions "
+                "and quote-driven paper exit evaluation."
+            )
+            return
+
+        # Protect cached market hours access. This is only needed for quote-driven
+        # paper exits, so skip it entirely when streaming is disabled.
+        async with self.lock:
+            if not hasattr(self, '_cached_market_hours') or time.time() - self._cached_market_hours_timestamp > 300:
+                self._cached_market_hours = await self.tdameritrade.getMarketHoursAsync(date=dtNow)
+                self._cached_market_hours_timestamp = time.time()
+
+        await self.quote_manager.add_callback(self.evaluate_paper_triggers)
 
         # Collect all symbols from the open positions that haven't been subscribed yet
         # Check which symbols are already subscribed and filter them out from the query
