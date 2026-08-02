@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the Thinkorswim bot at 12:35 PM Eastern on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 12:35:00 America/New_York
+Persistent=false
+Unit=thinkorswim-bot.service
+
+[Install]
+WantedBy=timers.target

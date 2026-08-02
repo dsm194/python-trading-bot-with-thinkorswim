@@ -1,6 +1,6 @@
 [Unit]
 Description=Thinkorswim email trading bot
-After=network-online.target orfa-bot-live-paper.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -10,7 +10,6 @@ Group=orfa
 WorkingDirectory=/opt/thinkorswim_bot/current
 EnvironmentFile=/etc/thinkorswim_bot/thinkorswim_bot.env
 EnvironmentFile=/etc/thinkorswim_bot/thinkorswim_bot.secrets.env
-ExecCondition=/bin/sh -c '! /usr/bin/systemctl is-active --quiet orfa-bot-live-paper.service'
 ExecStart=/opt/thinkorswim_bot/current/scripts/start_bot_session.sh
 ExecStop=/usr/bin/touch /opt/thinkorswim_bot/shared/run/stop_signal.txt
 Restart=no

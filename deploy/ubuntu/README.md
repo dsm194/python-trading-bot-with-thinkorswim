@@ -63,8 +63,8 @@ bash deploy/ubuntu/deploy.sh
 ```
 
 The deployer does not start the trading bot unless
-`BOT_DEPLOY_RESTART=1`. Normally ORFA's successful completion triggers the
-five-minute delayed handoff.
+`BOT_DEPLOY_RESTART=1`. Normally the weekday 12:35 ET start timer launches the
+bot independently of ORFA's process lifecycle.
 
 ## Credential Refresh
 
@@ -86,28 +86,27 @@ If `BOT_DEPLOY_HOST` is omitted, only local credentials are refreshed and the
 ORFA local token is updated. Remote synchronization refuses to replace tokens
 while either ORFA or this bot is active.
 
-## Service Handoff
+## Service Schedule
 
 The deploy installs:
 
 - `thinkorswim-bot.service`: the trading bot itself.
-- `thinkorswim-bot-after-orfa.service`: a five-minute delay followed by start.
+- `thinkorswim-bot-start.timer`: starts the bot at 12:35 PM Eastern on weekdays.
 - `thinkorswim-bot-stop.timer`: stops the bot at 4:00 PM Eastern on weekdays.
-- An ORFA service drop-in with
-  `OnSuccess=thinkorswim-bot-after-orfa.service`.
 
-The bot service also checks that ORFA is inactive before starting. The launcher
-skips weekends and dates in `config/no_trade_dates.txt`. The ORFA drop-in also
-declares a conflict with this bot, so starting the next ORFA session first
-stops this bot and waits for its graceful shutdown. Together, the start guard
-and ORFA conflict enforce a single Schwab session.
+The launcher skips weekends and dates in `config/no_trade_dates.txt`. ORFA may
+remain active after its 12:30 ET production entry lock to consume streaming bars
+for shadow strategies. Thinkorswim has streaming quotes disabled in production,
+so both processes can run side-by-side without competing for a Schwab streaming
+subscription. Deployment removes the former ORFA `OnSuccess` drop-in and delayed
+handoff service.
 
 Inspect the chain:
 
 ```bash
 systemctl cat orfa-bot-live-paper.service
-systemctl status thinkorswim-bot-after-orfa.service
 systemctl status thinkorswim-bot.service
+systemctl status thinkorswim-bot-start.timer
 systemctl status thinkorswim-bot-stop.timer
 systemctl list-timers 'thinkorswim-bot*'
 journalctl -u thinkorswim-bot.service -f
@@ -120,7 +119,7 @@ sudo systemctl start thinkorswim-bot.service
 sudo systemctl stop thinkorswim-bot.service
 ```
 
-After verifying the ORFA handoff and the 4:00 PM Eastern stop timer for a full
+After verifying the 12:35 PM start and 4:00 PM Eastern stop timers for a full
 session, remove the old cron entries that start or stop this bot:
 
 ```bash
@@ -128,8 +127,8 @@ crontab -l
 crontab -e
 ```
 
-Do not enable `thinkorswim-bot.service` at boot. It is started by the ORFA
-handoff or manually by an operator.
+Do not enable `thinkorswim-bot.service` at boot. It is started by its timer or
+manually by an operator.
 
 ## Live Trading Interlock
 

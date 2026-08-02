@@ -40,7 +40,7 @@ echo "Deploying $commit to $deploy_host:$deploy_root/releases/$release_name"
 ssh "$deploy_host" \
   "id orfa >/dev/null 2>&1 || sudo useradd --system --create-home --shell /usr/sbin/nologin orfa"
 ssh "$deploy_host" \
-  "sudo mkdir -p '$deploy_root/releases/$release_name' '$deploy_root/shared/logs' '$deploy_root/shared/run' '$deploy_root/shared/secrets' /opt/orfa_bot/shared/secrets /etc/thinkorswim_bot /etc/systemd/system/orfa-bot-live-paper.service.d"
+  "sudo mkdir -p '$deploy_root/releases/$release_name' '$deploy_root/shared/logs' '$deploy_root/shared/run' '$deploy_root/shared/secrets' /opt/orfa_bot/shared/secrets /etc/thinkorswim_bot"
 scp "$archive_path" "$deploy_host:/tmp/thinkorswim_bot_release.tar.gz"
 ssh "$deploy_host" \
   "sudo tar -xzf /tmp/thinkorswim_bot_release.tar.gz -C '$deploy_root/releases/$release_name' && rm -f /tmp/thinkorswim_bot_release.tar.gz"
@@ -59,11 +59,12 @@ ssh "$deploy_host" \
   "sudo ln -sfn '$deploy_root/releases/$release_name' '$deploy_root/current'"
 ssh "$deploy_host" \
   "sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot.service' /etc/systemd/system/ && \
-   sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-after-orfa.service' /etc/systemd/system/ && \
+   sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-start.timer' /etc/systemd/system/ && \
    sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-stop.service' /etc/systemd/system/ && \
    sudo cp '$deploy_root/current/deploy/ubuntu/thinkorswim-bot-stop.timer' /etc/systemd/system/ && \
    sudo cp '$deploy_root/current/deploy/ubuntu/logrotate.thinkorswim-bot' /etc/logrotate.d/thinkorswim-bot && \
-   sudo cp '$deploy_root/current/deploy/ubuntu/orfa-bot-live-paper.service.d/thinkorswim-handoff.conf' /etc/systemd/system/orfa-bot-live-paper.service.d/"
+   sudo rm -f /etc/systemd/system/thinkorswim-bot-after-orfa.service \
+     /etc/systemd/system/orfa-bot-live-paper.service.d/thinkorswim-handoff.conf"
 
 scp "$profile_path" "$deploy_host:/tmp/thinkorswim_bot.env"
 ssh "$deploy_host" \
@@ -80,7 +81,8 @@ if ! ssh "$deploy_host" "sudo test -f '$deploy_root/shared/secrets/gmail_token.j
 fi
 
 ssh "$deploy_host" \
-  "sudo systemctl daemon-reload && sudo systemctl enable --now thinkorswim-bot-stop.timer"
+  "sudo systemctl daemon-reload && \
+   sudo systemctl enable --now thinkorswim-bot-start.timer thinkorswim-bot-stop.timer"
 
 if [[ "$restart_service" == "1" ]]; then
   ssh "$deploy_host" "sudo systemctl restart '$service_name'"
